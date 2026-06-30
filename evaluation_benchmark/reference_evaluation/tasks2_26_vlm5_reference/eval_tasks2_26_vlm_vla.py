@@ -724,7 +724,7 @@ def main() -> None:
     args.lora_path = os.environ.get("VLM_LORA_PATH", "none")
     args.vlm_device = os.environ.get("VLM_DEVICE", "cuda:1")
     args.resize_size = int(os.environ.get("RESIZE_SIZE", "256"))
-    args.replan_steps = int(os.environ.get("REPLAN_STEPS", "5"))
+    args.replan_steps = int(os.environ.get("REPLAN_STEPS", "10"))
     args.num_steps_wait = int(os.environ.get("NUM_STEPS_WAIT", "10"))
     args.max_steps = int(os.environ.get("MAX_STEPS", "2000"))
     args.seed = int(os.environ.get("SEED", "104"))

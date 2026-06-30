@@ -79,7 +79,7 @@ This wrapper records every episode. It does not retry seeds and does not filter 
 ## Adapter contract
 
 Your adapter must return a numpy array with shape `[horizon, action_dim]`.
-Each row is one action to send to the environment. The benchmark code will reuse up to `replan_steps` actions before querying the adapter again.
+Each row is one action to send to the environment. The benchmark code will reuse up to `replan_steps` actions before querying the adapter again. The default is 10 steps unless overridden by the evaluation command.
 
 Required methods:
 

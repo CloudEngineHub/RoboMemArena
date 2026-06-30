@@ -860,7 +860,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--adapter-spec", required=True)
     parser.add_argument("--adapter-kwargs", default="")
     parser.add_argument("--resize-size", type=int, default=256)
-    parser.add_argument("--replan-steps", type=int, default=5)
+    parser.add_argument("--replan-steps", type=int, default=10)
     parser.add_argument("--num-steps-wait", type=int, default=10)
     parser.add_argument("--num-trials-per-task", type=int, default=50)
     parser.add_argument("--max-steps", type=int, default=3000)

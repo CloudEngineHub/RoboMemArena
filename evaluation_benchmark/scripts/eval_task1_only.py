@@ -24,7 +24,7 @@ class Args:
     resize_size: int = 256
     env_camera_height: int = 480
     env_camera_width: int = 640
-    replan_steps: int = 5
+    replan_steps: int = 10
     num_steps_wait: int = 10
     num_trials_per_task: int = 10
     max_steps: int = 2000
@@ -40,7 +40,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--resize-size", type=int, default=256)
     parser.add_argument("--env-camera-height", type=int, default=480)
     parser.add_argument("--env-camera-width", type=int, default=640)
-    parser.add_argument("--replan-steps", type=int, default=5)
+    parser.add_argument("--replan-steps", type=int, default=10)
     parser.add_argument("--num-steps-wait", type=int, default=10)
     parser.add_argument("--num-trials-per-task", type=int, default=10)
     parser.add_argument("--max-steps", type=int, default=2000)
