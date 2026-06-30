@@ -414,6 +414,7 @@ def _goal_override_check(task_id: int):
 
 def run_episode_async_stateful(
     *,
+    task_id: int,
     env: Any,
     client: Any,
     planner: FullVlm26MemoryPlanner,
@@ -423,7 +424,9 @@ def run_episode_async_stateful(
     goal_check_override,
     vlm_camera_pose: dict | None,
     logger: logging.Logger,
-) -> tuple[float, dict[str, bool], bool, list[np.ndarray], list[np.ndarray]]:
+    fail_on_extra_pour: bool,
+    extra_pour_monitor_steps: int,
+) -> tuple[float, dict[str, bool], bool | None, dict[str, Any], list[np.ndarray], list[np.ndarray]]:
     obs = env.reset()
     replay: list[np.ndarray] = []
     replay_wrist: list[np.ndarray] = []
@@ -439,7 +442,14 @@ def run_episode_async_stateful(
     state: dict[str, Any] | None = None
     current_stage_start = 0
     current_subtask_prompt = ""
-    goal_success = False
+    counting_pour_task = stage_eval._is_counting_pour_task(task_id)
+    goal_success: bool | None = None if counting_pour_task else False
+    extra_pour_check = stage_eval._extra_pour_check(task_id)
+    extra_monitor_start_state_idx: int | None = None
+    extra_monitor_deadline_t: int | None = None
+    extra_pour_detected = False
+    pour_1_step: int | None = None
+    pour_2_step: int | None = None
 
     def write_subtask(step_idx: int, subtask: str) -> None:
         with subtask_lock:
@@ -560,6 +570,18 @@ def run_episode_async_stateful(
                     if spec.check_fn(env, state, current_stage_start):
                         stage_done[spec.name] = True
                         logger.info("[t=%s] stage done: %s", t, spec.name)
+                        if spec.name.endswith("_Pour_One"):
+                            pour_1_step = t
+                        elif spec.name.endswith("_Pour_Two"):
+                            pour_2_step = t
+                            if counting_pour_task and fail_on_extra_pour:
+                                extra_monitor_start_state_idx = int(state["step_idx"])
+                                extra_monitor_deadline_t = t + extra_pour_monitor_steps
+                                logger.info(
+                                    "[t=%s] extra-pour monitor started; deadline=%s",
+                                    t,
+                                    extra_monitor_deadline_t,
+                                )
                         stage_idx += 1
                         current_stage_start = state["step_idx"]
 
@@ -567,12 +589,38 @@ def run_episode_async_stateful(
                     logger.info("[t=%s] all stages done", t)
                     all_stages_logged = True
 
-                if goal_check_override is not None:
-                    goal_success = bool(goal_check_override(env, stage_done))
-                else:
-                    goal_success = ec.check_goal_success(env, goal_monitor_dict) if goal_monitor_dict else False
-                if goal_success:
-                    logger.info("[t=%s] goal success", t)
+                if (
+                    counting_pour_task
+                    and fail_on_extra_pour
+                    and extra_pour_check is not None
+                    and extra_monitor_start_state_idx is not None
+                    and extra_monitor_deadline_t is not None
+                    and pour_2_step is not None
+                    and pour_2_step < t <= extra_monitor_deadline_t
+                    and extra_pour_check(env, state, extra_monitor_start_state_idx)
+                ):
+                    extra_pour_detected = True
+                    logger.info("[t=%s] third pour detected; episode failed", t)
+                    raise StopIteration
+
+                if not counting_pour_task:
+                    if goal_check_override is not None:
+                        goal_success = bool(goal_check_override(env, stage_done))
+                    else:
+                        goal_success = ec.check_goal_success(env, goal_monitor_dict) if goal_monitor_dict else False
+                    if goal_success:
+                        logger.info("[t=%s] goal success", t)
+                        raise StopIteration
+
+                all_stages_complete = bool(stage_done) and all(stage_done.values())
+                extra_monitor_complete = (
+                    not fail_on_extra_pour
+                    or (
+                        extra_monitor_deadline_t is not None
+                        and t >= extra_monitor_deadline_t
+                    )
+                )
+                if counting_pour_task and all_stages_complete and extra_monitor_complete:
                     raise StopIteration
                 if done or t >= args.max_steps + args.num_steps_wait:
                     raise StopIteration
@@ -592,12 +640,44 @@ def run_episode_async_stateful(
 
     num_done = sum(1 for ok in stage_done.values() if ok)
     stage_pct = 100.0 * num_done / max(1, len(stage_specs))
-    if not goal_success:
+    if not counting_pour_task and not goal_success:
         if goal_check_override is not None:
             goal_success = bool(goal_check_override(env, stage_done))
         else:
             goal_success = ec.check_goal_success(env, goal_monitor_dict) if goal_monitor_dict else False
-    return stage_pct, stage_done, goal_success, replay, replay_wrist
+    all_stages_complete = bool(stage_done) and all(stage_done.values())
+    extra_monitor_complete = (
+        not fail_on_extra_pour
+        or (
+            extra_monitor_deadline_t is not None
+            and t >= extra_monitor_deadline_t
+        )
+    )
+    stage_success = all_stages_complete and (
+        not counting_pour_task
+        or (extra_monitor_complete and not extra_pour_detected)
+    )
+    if extra_pour_detected:
+        failure_reason = "extra_pour"
+    elif not all_stages_complete:
+        failure_reason = "incomplete_stage"
+    elif counting_pour_task and not extra_monitor_complete:
+        failure_reason = "monitor_incomplete"
+    else:
+        failure_reason = None
+    diagnostics = {
+        "stage_success": bool(stage_success),
+        "extra_pour_detected": bool(extra_pour_detected),
+        "pour_1_step": pour_1_step,
+        "pour_2_step": pour_2_step,
+        "extra_monitor_end_step": (
+            extra_monitor_deadline_t
+            if extra_monitor_deadline_t is not None and t >= extra_monitor_deadline_t
+            else None
+        ),
+        "failure_reason": failure_reason,
+    }
+    return stage_pct, stage_done, goal_success, diagnostics, replay, replay_wrist
 
 
 def patch_env_resolution() -> None:
@@ -649,12 +729,22 @@ def main() -> None:
     args.d_merge = int(os.environ.get("D_MERGE", "6"))
     args.vlm_use_wrist = os.environ.get("VLM_USE_WRIST", "1") in {"1", "true", "yes"}
     args.vlm_use_keyframe_memory = os.environ.get("VLM_USE_KEYFRAME_MEMORY", "1") in {"1", "true", "yes"}
+    fail_on_extra_pour = os.environ.get("FAIL_ON_EXTRA_POUR", "1").strip().lower() in {"1", "true", "yes", "y", "on"}
+    extra_pour_monitor_steps = int(os.environ.get("EXTRA_POUR_MONITOR_STEPS", "120"))
     _apply_vlm_input_profile(args)
 
     out_root.mkdir(parents=True, exist_ok=True)
     video_root.mkdir(parents=True, exist_ok=True)
-    prompt_trace_tsv.write_text("task_id\ttrial\tseed\tvlm_ckpt\tvla_prompt_last\ttsr\tcsr\n", encoding="utf-8")
-    summary_tsv.write_text("task_id\tstatus\terror\tcsr\ttsr\tvideo_dir\tduration_sec\n", encoding="utf-8")
+    prompt_trace_tsv.write_text(
+        "task_id\ttrial\tseed\tvlm_ckpt\tvla_prompt_last\tstage_success\tgoal_success\t"
+        "stage_score_pct\textra_pour_detected\tfailure_reason\n",
+        encoding="utf-8",
+    )
+    summary_tsv.write_text(
+        "task_id\tstatus\terror\tstage_score_pct\tstage_success_rate\tgoal_success_rate\t"
+        "video_dir\tduration_sec\n",
+        encoding="utf-8",
+    )
 
     _seed_everywhere(args.seed)
     client = StableWebsocketClientPolicy(args.host, args.port, ping_interval=None, ping_timeout=None, close_timeout=30.0)
@@ -685,7 +775,8 @@ def main() -> None:
         planner.set_task_info(task_info)
         bddl_path = ec._resolve_bddl_path(task_id)
         stage_specs = _task_specs(task_id)
-        goal_monitor_dict = ec._build_goal_monitor_dict(bddl_path)
+        counting_pour_task = stage_eval._is_counting_pour_task(task_id)
+        goal_monitor_dict = {} if counting_pour_task else ec._build_goal_monitor_dict(bddl_path)
         goal_check_override = _goal_override_check(task_id)
         task_video = video_root / f"task{task_id}"
         task_video.mkdir(parents=True, exist_ok=True)
@@ -696,6 +787,7 @@ def main() -> None:
         st = time.time()
         stage_sum = 0.0
         goal_cnt = 0
+        stage_success_cnt = 0
 
         try:
             env_cls = ec._get_env_class()
@@ -719,7 +811,8 @@ def main() -> None:
                 ep_logger = make_episode_logger(run_dir)
                 ep_logger.info("task_id=%s bddl=%s vlm_ckpt=%s", task_id, bddl_path, args.base_model_dir)
                 planner.reset_episode(instruction="", run_dir=run_dir, logger=ep_logger)
-                stage_pct, stage_done, goal_success, replay, replay_wrist = run_episode_async_stateful(
+                stage_pct, stage_done, goal_success, diagnostics, replay, replay_wrist = run_episode_async_stateful(
+                    task_id=task_id,
                     env=env,
                     client=client,
                     planner=planner,
@@ -729,14 +822,37 @@ def main() -> None:
                     goal_check_override=goal_check_override,
                     vlm_camera_pose=None,
                     logger=ep_logger,
+                    fail_on_extra_pour=fail_on_extra_pour,
+                    extra_pour_monitor_steps=extra_pour_monitor_steps,
                 )
                 stage_sum += stage_pct
-                goal_cnt += int(goal_success)
-                base_name = ec.get_video_basename(task_id, ep, seed, goal_success)
+                stage_success_cnt += int(diagnostics["stage_success"])
+                if goal_success is not None:
+                    goal_cnt += int(goal_success)
+                base_name = ec.get_video_basename(
+                    task_id,
+                    ep,
+                    seed,
+                    diagnostics["stage_success"] if counting_pour_task else bool(goal_success),
+                )
                 stages_str = " | ".join(f"{k}={'Y' if v else 'N'}" for k, v in stage_done.items())
-                ep_logger.info("Episode %s seed=%s CSR=%.1f TSR=%s | %s", ep, seed, stage_pct, int(goal_success), stages_str)
+                ep_logger.info(
+                    "Episode %s seed=%s stage_score=%.1f stage_success=%s goal=%s failure_reason=%s | %s",
+                    ep,
+                    seed,
+                    stage_pct,
+                    int(diagnostics["stage_success"]),
+                    "N/A" if goal_success is None else int(goal_success),
+                    diagnostics["failure_reason"],
+                    stages_str,
+                )
                 with prompt_trace_tsv.open("a", encoding="utf-8") as f:
-                    f.write(f"{task_id}\t{ep}\t{seed}\t{args.base_model_dir}\t\t{int(goal_success)}\t{stage_pct:.1f}\n")
+                    goal_text = "N/A" if goal_success is None else str(int(goal_success))
+                    f.write(
+                        f"{task_id}\t{ep}\t{seed}\t{args.base_model_dir}\t\t"
+                        f"{int(diagnostics['stage_success'])}\t{goal_text}\t{stage_pct:.1f}\t"
+                        f"{int(diagnostics['extra_pour_detected'])}\t{diagnostics['failure_reason']}\n"
+                    )
                 if replay:
                     try:
                         _write_video(task_video / f"{base_name}.mp4", replay, fps=10)
@@ -754,30 +870,49 @@ def main() -> None:
             traceback.print_exc()
 
         n = max(1, args.num_trials_per_task)
-        csr = stage_sum / n
-        tsr = goal_cnt / n
+        stage_score = stage_sum / n
+        stage_success_rate = stage_success_cnt / n
+        goal_success_rate = None if counting_pour_task else goal_cnt / n
         dur = round(time.time() - st, 2)
         row = {
             "task_id": task_id,
             "status": status,
             "error": err,
-            "csr": csr,
-            "tsr": tsr,
+            "stage_score_pct": stage_score,
+            "stage_success_rate": stage_success_rate,
+            "goal_success_rate": goal_success_rate,
             "video_dir": str(task_video),
             "duration_sec": dur,
         }
         results.append(row)
         summary_json.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
         with summary_tsv.open("a", encoding="utf-8") as f:
-            f.write(f"{task_id}\t{status}\t{err.replace(chr(9), ' ')}\t{csr:.1f}\t{tsr:.4f}\t{task_video}\t{dur}\n")
-        logging.info("task=%s status=%s CSR=%.1f TSR=%.3f", task_id, status, csr, tsr)
+            goal_text = "N/A" if goal_success_rate is None else f"{goal_success_rate:.4f}"
+            f.write(
+                f"{task_id}\t{status}\t{err.replace(chr(9), ' ')}\t{stage_score:.1f}\t"
+                f"{stage_success_rate:.4f}\t{goal_text}\t{task_video}\t{dur}\n"
+            )
+        logging.info(
+            "task=%s status=%s stage_score=%.1f stage_success=%.3f goal=%s",
+            task_id,
+            status,
+            stage_score,
+            stage_success_rate,
+            goal_text,
+        )
 
     planner.close()
-    total_csr = sum(r["csr"] for r in results if r["status"] == "completed") / max(1, sum(1 for r in results if r["status"] == "completed"))
-    total_tsr = sum(r["tsr"] for r in results if r["status"] == "completed") / max(1, sum(1 for r in results if r["status"] == "completed"))
-    aggregate = {"macro_csr": total_csr, "macro_tsr": total_tsr, "num_tasks": len(results)}
+    completed = [r for r in results if r["status"] == "completed"]
+    goal_scored = [r for r in completed if r["goal_success_rate"] is not None]
+    aggregate = {
+        "macro_stage_score_pct": sum(r["stage_score_pct"] for r in completed) / max(1, len(completed)),
+        "macro_stage_success_rate": sum(r["stage_success_rate"] for r in completed) / max(1, len(completed)),
+        "macro_goal_success_rate": sum(r["goal_success_rate"] for r in goal_scored) / max(1, len(goal_scored)),
+        "num_tasks": len(results),
+        "num_goal_scored_tasks": len(goal_scored),
+    }
     (out_root / "aggregate.json").write_text(json.dumps(aggregate, ensure_ascii=False, indent=2), encoding="utf-8")
-    logging.info("done macro CSR=%.1f TSR=%.3f summary=%s", total_csr, total_tsr, summary_tsv)
+    logging.info("done aggregate=%s summary=%s", aggregate, summary_tsv)
 
 
 if __name__ == "__main__":

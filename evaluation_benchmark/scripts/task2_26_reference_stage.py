@@ -20,6 +20,22 @@ class StageSpec:
     name: str
     check_fn: Callable[[Any, dict[str, Any], int], bool]
 
+
+COUNTING_POUR_TASK_OBJECTS = {
+    6: "tomato_sauce_1",
+    7: "tomato_sauce_1",
+    8: "tomato_sauce_1",
+    9: "tomato_sauce_1",
+    10: "wine_bottle_1",
+    15: "milk_1",
+    16: "milk_1",
+    22: "tomato_sauce_1",
+}
+
+
+def _is_counting_pour_task(task_id: int) -> bool:
+    return task_id in COUNTING_POUR_TASK_OBJECTS
+
 def _patch_env_resolution() -> None:
     base_env = ec._get_env_class()
     orig_init = base_env.__init__
@@ -514,19 +530,20 @@ def _pour_stage(
 
     return check
 
-def _tomato_body_pour_stage(
+def _body_pour_stage(
+    obj_name: str,
     move_thresh: float = 0.15,
     return_thresh: float = 0.10,
     min_steps: int = 10,
     warmup: int = 5,
 ) -> Callable[[Any, dict[str, Any], int], bool]:
     def check(env: Any, state: dict[str, Any], stage_start: int) -> bool:
-        tilt = _body_tilt_angle(env, "tomato_sauce_1")
+        tilt = _body_tilt_angle(env, obj_name)
         if tilt is None:
             return False
-        axis_tilts = _body_axis_tilts(env, "tomato_sauce_1")
+        axis_tilts = _body_axis_tilts(env, obj_name)
         step_idx = int(state.get("step_idx", len(state.get("tilt_angles", []))))
-        records = state.setdefault("task6_tomato_tilt_records", [])
+        records = state.setdefault(f"pour_tilt_records_{obj_name}", [])
         if not records or int(records[-1][0]) != step_idx:
             records.append((step_idx, float(tilt)))
         vals = np.asarray([v for step, v in records if int(step) >= int(stage_start)], dtype=np.float32)
@@ -581,6 +598,32 @@ def _tomato_body_pour_stage(
 
     return check
 
+
+def _tomato_body_pour_stage(
+    move_thresh: float = 0.15,
+    return_thresh: float = 0.10,
+    min_steps: int = 10,
+    warmup: int = 5,
+) -> Callable[[Any, dict[str, Any], int], bool]:
+    return _body_pour_stage("tomato_sauce_1", move_thresh, return_thresh, min_steps, warmup)
+
+
+def _counting_pour_stages(
+    obj_name: str,
+    label: str,
+    start_index: int = 1,
+) -> list[StageSpec]:
+    return [
+        StageSpec(f"{start_index:02d}_Lift_{label}", _lift_rel(obj_name, 0.03)),
+        StageSpec(f"{start_index + 1:02d}_Pour_One", _body_pour_stage(obj_name)),
+        StageSpec(f"{start_index + 2:02d}_Pour_Two", _body_pour_stage(obj_name)),
+    ]
+
+
+def _extra_pour_check(task_id: int) -> Callable[[Any, dict[str, Any], int], bool] | None:
+    obj_name = COUNTING_POUR_TASK_OBJECTS.get(task_id)
+    return _body_pour_stage(obj_name) if obj_name is not None else None
+
 def _task_specs(task_id: int) -> list[StageSpec]:
     if task_id == 2:
         return [
@@ -617,37 +660,19 @@ def _task_specs(task_id: int) -> list[StageSpec]:
             StageSpec("09_Close_Middle_Drawer_Final", _drawer_closed_abs("wooden_cabinet_1_middle_region", None, 0.08)),
         ]
     if task_id == 6:
-        return [
-            StageSpec("01_Lift_Tomato_Sauce", _lift_rel("tomato_sauce_1", 0.03)),
-            StageSpec("02_Pour_One", _tomato_body_pour_stage(0.15, 0.10)),
-            StageSpec("03_Pour_Two", _tomato_body_pour_stage(0.15, 0.10)),
-        ]
+        return _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce")
     if task_id == 7:
-        return [
-            StageSpec("01_Pour_One", _pour_stage(0.30, 10)),
-            StageSpec("02_Pour_Two", _pour_stage(0.30, 10)),
-            StageSpec("03_Place_Bowl_Drainer", _in_container_body("tomato_sauce_1", "bowl_drainer_1", 0.15, -0.05, 0.20)),
-        ]
+        return _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce")
     if task_id == 8:
         return [
             StageSpec("01_Place_Pudding_Frypan", _in_container_body("chocolate_pudding_1", "frypan_1", 0.10, -0.05, 0.15)),
-            StageSpec("02_Pour_One", _pour_stage(0.30, 10)),
-            StageSpec("03_Pour_Two", _pour_stage(0.30, 10)),
-            StageSpec("04_Place_Bowl_Drainer", _in_container_body("tomato_sauce_1", "bowl_drainer_1", 0.15, -0.05, 0.20)),
-        ]
+        ] + _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce", start_index=2)
     if task_id == 9:
         return [
             StageSpec("01_Place_Butter_Frypan", _in_container_body("butter_1", "frypan_1", 0.10, -0.05, 0.15)),
-            StageSpec("02_Pour_One", _pour_stage(0.30, 10)),
-            StageSpec("03_Pour_Two", _pour_stage(0.30, 10)),
-            StageSpec("04_Place_Bowl_Drainer", _in_container_body("tomato_sauce_1", "bowl_drainer_1", 0.15, -0.05, 0.20)),
-        ]
+        ] + _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce", start_index=2)
     if task_id == 10:
-        return [
-            StageSpec("01_Pour_One", _pour_stage(0.78, 20, hold_angle=1.05, hold_frames=10)),
-            StageSpec("02_Pour_Two", _pour_stage(0.78, 20, hold_angle=1.05, hold_frames=10)),
-            StageSpec("03_Place_Wine_On_Table", _table_return("wine_bottle_1", 0.35)),
-        ]
+        return _counting_pour_stages("wine_bottle_1", "Wine_Bottle")
     if task_id == 11:
         return [
             StageSpec("01_Open_Top_Drawer", _drawer_open_abs("wooden_cabinet_1_top_region", None, 0.10)),
@@ -683,16 +708,9 @@ def _task_specs(task_id: int) -> list[StageSpec]:
     if task_id == 15:
         return [
             StageSpec("01_Place_Butter_Frypan", _in_container_body("butter_1", "frypan_1", 0.12, -0.05, 0.15)),
-            StageSpec("02_Pour_One", _pour_stage(0.30, 10)),
-            StageSpec("03_Pour_Two", _pour_stage(0.30, 10)),
-            StageSpec("04_Place_Milk_Table", _table_return("milk_1", 0.40)),
-        ]
+        ] + _counting_pour_stages("milk_1", "Milk", start_index=2)
     if task_id == 16:
-        return [
-            StageSpec("01_Pour_One", _pour_stage(0.30, 10)),
-            StageSpec("02_Pour_Two", _pour_stage(0.30, 10)),
-            StageSpec("03_Place_Bowl_Drainer", _in_container_body("milk_1", "bowl_drainer_1", 0.15, -0.05, 0.20)),
-        ]
+        return _counting_pour_stages("milk_1", "Milk")
     if task_id == 17:
         return [
             StageSpec("01_Open_Middle_Drawer", _drawer_open_abs("wooden_cabinet_1_middle_region", None, 0.10)),
@@ -726,13 +744,11 @@ def _task_specs(task_id: int) -> list[StageSpec]:
             StageSpec("04_Close_Microwave", _microwave_closed(0.05)),
         ]
     if task_id == 22:
-        return [
-            StageSpec("01_Pour_One", _pour_stage(0.30, 10)),
-            StageSpec("02_Pour_Two", _pour_stage(0.30, 10)),
-            StageSpec("03_Place_Tomato_Aside", _near_fixed_position("tomato_sauce_1", np.array([0.0, -0.2, 0.50], dtype=np.float32), 0.20, 0.20)),
-            StageSpec("04_Open_Microwave", _microwave_open(0.30)),
-            StageSpec("05_Place_Cookies_Microwave", _in_microwave("cookies_1")),
-            StageSpec("06_Close_Microwave", _microwave_closed(0.05)),
+        return _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce") + [
+            StageSpec("04_Place_Tomato_Aside", _near_fixed_position("tomato_sauce_1", np.array([0.0, -0.2, 0.50], dtype=np.float32), 0.20, 0.20)),
+            StageSpec("05_Open_Microwave", _microwave_open(0.30)),
+            StageSpec("06_Place_Cookies_Microwave", _in_microwave("cookies_1")),
+            StageSpec("07_Close_Microwave", _microwave_closed(0.05)),
         ]
     if task_id == 23:
         return [
@@ -761,15 +777,7 @@ def _task_specs(task_id: int) -> list[StageSpec]:
     raise ValueError(f"Unsupported task_id={task_id}")
 
 def _goal_override_check(task_id: int) -> Callable[[Any, dict[str, bool]], bool] | None:
-    if task_id in {10, 15, 18, 19}:
+    if task_id in {18, 19}:
         #  goal 
         return lambda env, stage_done: all(stage_done.values())
-    if task_id in {6, 7, 8, 9}:
-        # Tomato tasks: goal is placing tomato sauce in bowl drainer.
-        place_bowl_drainer = _in_container_body("tomato_sauce_1", "bowl_drainer_1", 0.15, -0.05, 0.20)
-        return lambda env, stage_done: place_bowl_drainer(env, {}, 0)
-    if task_id == 16:
-        # Milk task: goal must track milk_1, not tomato_sauce_1.
-        place_bowl_drainer = _in_container_body("milk_1", "bowl_drainer_1", 0.15, -0.05, 0.20)
-        return lambda env, stage_done: place_bowl_drainer(env, {}, 0)
     return None

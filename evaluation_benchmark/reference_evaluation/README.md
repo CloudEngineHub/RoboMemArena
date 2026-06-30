@@ -102,7 +102,13 @@ ${OUT_ROOT}/task*/ep*/sync_vlm_trace.jsonl
 
 Metric names:
 
-- `CSR`: final BDDL goal success rate
-- `TSR`: stage/process completion score
+- `CSR`: final BDDL goal success rate for tasks that use a goal checker
+- `stage_success_rate`: strict all-stage completion rate
+- `stage_score_pct`: partial stage/process completion score
+
+Counting-pour tasks 6, 7, 8, 9, 10, 15, 16, and 22 use stage-only scoring and
+do not call the BDDL goal checker. By default, the evaluator also monitors 120
+environment steps after the second completed pour and rejects a third pour.
+Set `FAIL_ON_EXTRA_POUR=0` only for diagnostic runs; the default is `1`.
 
 Example HF weight repository: `https://huggingface.co/huashuolei/PrediMem`

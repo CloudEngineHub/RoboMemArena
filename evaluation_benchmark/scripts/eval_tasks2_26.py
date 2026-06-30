@@ -523,6 +523,7 @@ def _goal_override_check(task_id: int) -> Callable[[Any], bool] | None:
 
 
 def run_episode_with_stateful_stages(
+    task_id: int,
     env: Any,
     adapter: BasePolicyAdapter,
     prompt: str,
@@ -533,8 +534,10 @@ def run_episode_with_stateful_stages(
     post_goal_steps: int,
     stage_specs: list[StageSpec],
     goal_monitor_dict: dict[str, list[tuple[str, str]]],
-    goal_check_override: Callable[[Any], bool] | None,
-) -> tuple[float, dict[str, bool], bool, list[np.ndarray], list[np.ndarray]]:
+    goal_check_override: Callable[[Any, dict[str, bool]], bool] | None,
+    fail_on_extra_pour: bool,
+    extra_pour_monitor_steps: int,
+) -> tuple[float, dict[str, bool], bool | None, dict[str, Any], list[np.ndarray], list[np.ndarray]]:
     obs = env.reset()
     replay: list[np.ndarray] = []
     replay_wrist: list[np.ndarray] = []
@@ -546,6 +549,13 @@ def run_episode_with_stateful_stages(
     current_stage_start = 0
     all_stages_logged = False
     goal_reached_t: int | None = None
+    counting_pour_task = _is_counting_pour_task(task_id)
+    extra_pour_check = _extra_pour_check(task_id)
+    extra_monitor_start_state_idx: int | None = None
+    extra_monitor_deadline_t: int | None = None
+    extra_pour_detected = False
+    pour_1_step: int | None = None
+    pour_2_step: int | None = None
 
     try:
         while t < max_steps + num_steps_wait:
@@ -579,6 +589,18 @@ def run_episode_with_stateful_stages(
                 if spec.check_fn(env, state, current_stage_start):
                     stage_done[spec.name] = True
                     logging.info(f"  [t={t}] Stage completed: {spec.name}")
+                    if spec.name.endswith("_Pour_One"):
+                        pour_1_step = t
+                    elif spec.name.endswith("_Pour_Two"):
+                        pour_2_step = t
+                        if counting_pour_task and fail_on_extra_pour:
+                            extra_monitor_start_state_idx = int(state["step_idx"])
+                            extra_monitor_deadline_t = t + extra_pour_monitor_steps
+                            logging.info(
+                                "  [t=%s] Extra-pour monitor started; deadline=%s.",
+                                t,
+                                extra_monitor_deadline_t,
+                            )
                     stage_idx += 1
                     current_stage_start = state["step_idx"]
 
@@ -586,16 +608,42 @@ def run_episode_with_stateful_stages(
                 logging.info(f"  [t={t}] All stages completed.")
                 all_stages_logged = True
 
-            if goal_check_override is not None:
-                goal_success = goal_check_override(env)
-            else:
-                goal_success = ec.check_goal_success(env, goal_monitor_dict) if goal_monitor_dict else False
-            if goal_success and goal_reached_t is None:
-                goal_reached_t = t
-                logging.info(f"  [t={t}] Goal reached. Continuing {post_goal_steps} more steps before exit.")
+            if (
+                counting_pour_task
+                and fail_on_extra_pour
+                and extra_pour_check is not None
+                and extra_monitor_start_state_idx is not None
+                and extra_monitor_deadline_t is not None
+                and pour_2_step is not None
+                and pour_2_step < t <= extra_monitor_deadline_t
+                and extra_pour_check(env, state, extra_monitor_start_state_idx)
+            ):
+                extra_pour_detected = True
+                logging.info(f"  [t={t}] Third pour detected; episode failed.")
+
+            if not counting_pour_task:
+                if goal_check_override is not None:
+                    goal_success = goal_check_override(env, stage_done)
+                else:
+                    goal_success = ec.check_goal_success(env, goal_monitor_dict) if goal_monitor_dict else False
+                if goal_success and goal_reached_t is None:
+                    goal_reached_t = t
+                    logging.info(f"  [t={t}] Goal reached. Continuing {post_goal_steps} more steps before exit.")
+
+            all_stages_complete = bool(stage_done) and all(stage_done.values())
+            extra_monitor_complete = (
+                not fail_on_extra_pour
+                or (
+                    extra_monitor_deadline_t is not None
+                    and t >= extra_monitor_deadline_t
+                )
+            )
             if done:
                 break
-            if goal_reached_t is not None and (t - goal_reached_t) >= post_goal_steps:
+            if counting_pour_task:
+                if extra_pour_detected or (all_stages_complete and extra_monitor_complete):
+                    break
+            elif goal_reached_t is not None and (t - goal_reached_t) >= post_goal_steps:
                 break
             t += 1
     except Exception as exc:
@@ -603,8 +651,40 @@ def run_episode_with_stateful_stages(
 
     num_done = sum(1 for ok in stage_done.values() if ok)
     score = 100.0 * num_done / max(1, len(stage_specs))
-    goal_success = goal_reached_t is not None
-    return score, stage_done, goal_success, replay, replay_wrist
+    all_stages_complete = bool(stage_done) and all(stage_done.values())
+    extra_monitor_complete = (
+        not fail_on_extra_pour
+        or (
+            extra_monitor_deadline_t is not None
+            and t >= extra_monitor_deadline_t
+        )
+    )
+    stage_success = all_stages_complete and (
+        not counting_pour_task
+        or (extra_monitor_complete and not extra_pour_detected)
+    )
+    if extra_pour_detected:
+        failure_reason = "extra_pour"
+    elif not all_stages_complete:
+        failure_reason = "incomplete_stage"
+    elif counting_pour_task and not extra_monitor_complete:
+        failure_reason = "monitor_incomplete"
+    else:
+        failure_reason = None
+    diagnostics = {
+        "stage_success": bool(stage_success),
+        "extra_pour_detected": bool(extra_pour_detected),
+        "pour_1_step": pour_1_step,
+        "pour_2_step": pour_2_step,
+        "extra_monitor_end_step": (
+            extra_monitor_deadline_t
+            if extra_monitor_deadline_t is not None and t >= extra_monitor_deadline_t
+            else None
+        ),
+        "failure_reason": failure_reason,
+    }
+    goal_success = None if counting_pour_task else goal_reached_t is not None
+    return score, stage_done, goal_success, diagnostics, replay, replay_wrist
 
 
 # Use the same Task2-26 stage/goal checker as the VLM/VLA reference
@@ -612,7 +692,9 @@ def run_episode_with_stateful_stages(
 from task2_26_reference_stage import (  # noqa: E402
     StageSpec,
     _build_initial_state,
+    _extra_pour_check,
     _goal_override_check,
+    _is_counting_pour_task,
     _patch_env_resolution,
     _task_specs,
     _update_state,
@@ -632,6 +714,8 @@ def run_eval_task(
     adapter: BasePolicyAdapter | None = None,
     adapter_spec: str | None = None,
     adapter_kwargs: dict[str, Any] | None = None,
+    fail_on_extra_pour: bool = True,
+    extra_pour_monitor_steps: int = 120,
 ) -> dict[str, Any]:
     if task_id == 1:
         raise ValueError("Task 1 is intentionally excluded from eval_tasks2_26.py. Use eval_task1_only.py or reference_evaluation/task1_nomap_reference/eval_task1_nomap_reference.py.")
@@ -664,7 +748,8 @@ def run_eval_task(
     )
 
     stage_specs = _task_specs(task_id)
-    goal_monitor_dict = ec._build_goal_monitor_dict(bddl_path)
+    counting_pour_task = _is_counting_pour_task(task_id)
+    goal_monitor_dict = {} if counting_pour_task else ec._build_goal_monitor_dict(bddl_path)
     goal_check_override = _goal_override_check(task_id)
 
     total_score = 0.0
@@ -683,7 +768,8 @@ def run_eval_task(
                 pass
             adapter.reset()
 
-            score, stage_done, goal_success, replay, replay_wrist = run_episode_with_stateful_stages(
+            score, stage_done, goal_success, diagnostics, replay, replay_wrist = run_episode_with_stateful_stages(
+                task_id=task_id,
                 env=env,
                 adapter=adapter,
                 prompt=prompt,
@@ -695,15 +781,18 @@ def run_eval_task(
                 stage_specs=stage_specs,
                 goal_monitor_dict=goal_monitor_dict,
                 goal_check_override=goal_check_override,
+                fail_on_extra_pour=fail_on_extra_pour,
+                extra_pour_monitor_steps=extra_pour_monitor_steps,
             )
             total_score += score
             for name, ok in stage_done.items():
                 stage_totals[name] += int(ok)
-            tsr_success = bool(stage_done) and all(stage_done.values())
+            tsr_success = bool(diagnostics["stage_success"])
             tsr_succ_cnt += int(tsr_success)
-            goal_succ_cnt += int(goal_success)
+            if goal_success is not None:
+                goal_succ_cnt += int(goal_success)
 
-            base_name = ec.get_video_basename(task_id, ep, current_seed, goal_success)
+            base_name = ec.get_video_basename(task_id, ep, current_seed, tsr_success if counting_pour_task else bool(goal_success))
             if replay:
                 imageio.mimwrite(video_dir / f"{base_name}.mp4", replay, fps=10)
             if replay_wrist:
@@ -711,7 +800,10 @@ def run_eval_task(
 
             stages_str = " | ".join(f"{n}={'Y' if stage_done[n] else 'N'}" for n in stage_done)
             logging.info(
-                f"Episode {ep} (seed={current_seed}): score={score:.0f}% | {stages_str} | goal={'Y' if goal_success else 'N'}"
+                f"Episode {ep} (seed={current_seed}): score={score:.0f}% | {stages_str} | "
+                f"stage_success={'Y' if tsr_success else 'N'} | "
+                f"goal={'N/A' if goal_success is None else ('Y' if goal_success else 'N')} | "
+                f"failure_reason={diagnostics['failure_reason']}"
             )
             episodes.append(
                 {
@@ -719,8 +811,10 @@ def run_eval_task(
                     "seed": current_seed,
                     "score_pct": float(score),
                     "tsr_success": bool(tsr_success),
-                    "goal_success": bool(goal_success),
+                    "stage_success": bool(tsr_success),
+                    "goal_success": goal_success,
                     "stage_done": stage_done,
+                    **diagnostics,
                 }
             )
     finally:
@@ -738,8 +832,11 @@ def run_eval_task(
         logging.info(f"  {name}: {cnt}/{n} ({(cnt / max(1, n)) * 100:.0f}%)")
     tsr_pct = 100.0 * tsr_succ_cnt / max(1, n)
     logging.info(f"Final result - TSR all-stage success rate: {tsr_succ_cnt}/{n} ({tsr_pct:.1f}%)")
-    goal_pct = 100.0 * goal_succ_cnt / max(1, n)
-    logging.info(f"Final result - BDDL goal success rate: {goal_succ_cnt}/{n} ({goal_pct:.1f}%)")
+    goal_pct = None if counting_pour_task else 100.0 * goal_succ_cnt / max(1, n)
+    if goal_pct is None:
+        logging.info("Final result - BDDL goal success rate: N/A (stage-only counting-pour task)")
+    else:
+        logging.info(f"Final result - BDDL goal success rate: {goal_succ_cnt}/{n} ({goal_pct:.1f}%)")
     logging.info(f"Video output: {video_dir}")
     logging.info("============================================================")
 
@@ -751,7 +848,8 @@ def run_eval_task(
         "video_dir": str(video_dir),
         "average_score_pct": float(avg_score),
         "tsr_success_rate_pct": float(tsr_pct),
-        "goal_success_rate_pct": float(goal_pct),
+        "stage_success_rate_pct": float(tsr_pct),
+        "goal_success_rate_pct": None if goal_pct is None else float(goal_pct),
         "episodes": episodes,
     }
 
@@ -767,6 +865,12 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--num-trials-per-task", type=int, default=50)
     parser.add_argument("--max-steps", type=int, default=3000)
     parser.add_argument("--post-goal-steps", type=int, default=200)
+    parser.add_argument(
+        "--fail-on-extra-pour",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument("--extra-pour-monitor-steps", type=int, default=120)
     parser.add_argument("--video-out-path", default="outputs/tasks2_26_eval")
     parser.add_argument("--seed", type=int, default=100)
     return parser
@@ -786,6 +890,8 @@ if __name__ == "__main__":
         num_steps_wait=args.num_steps_wait,
         max_steps=args.max_steps,
         post_goal_steps=args.post_goal_steps,
+        fail_on_extra_pour=args.fail_on_extra_pour,
+        extra_pour_monitor_steps=args.extra_pour_monitor_steps,
         video_out_path=args.video_out_path,
         seed=args.seed,
     )

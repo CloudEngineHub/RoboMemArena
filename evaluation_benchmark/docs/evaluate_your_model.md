@@ -50,6 +50,12 @@ python scripts/run_all_tasks1_26.py \
   --out-root outputs/your_model_eval_1_26
 ```
 
+For counting-pour tasks, strict extra-pour rejection is enabled by default. The
+second completed pour starts a 120-environment-step monitor; a third completed
+pour during that window fails the episode. Use
+`--no-fail-on-extra-pour` only for diagnostic runs, or change the window with
+`--extra-pour-monitor-steps`.
+
 This wrapper records every episode. It does not retry seeds and does not filter for non-zero stage scores.
 The sweep uses the benchmark reference stage/goal checkers, so external model evaluation follows the same 1-26 scoring setting as the reference evaluation path.
 
@@ -87,8 +93,15 @@ export VLA_CONFIG=<your_vla_config_name>  # optional; default runner value is pi
 
 ## Metrics
 
-- `CSR`: final BDDL goal success rate.
-- `TSR`: all-stage success rate. An episode counts as TSR success only when every reference stage is completed.
+- `CSR`: final BDDL goal success rate for tasks that use a BDDL goal checker.
+- `stage_success_rate`: all-stage success rate. An episode succeeds only when every reference stage is completed.
 - `average_score_pct`: diagnostic partial stage/process completion score.
+
+Tasks 6, 7, 8, 9, 10, 15, 16, and 22 are counting-pour tasks. They do not call
+the BDDL goal checker and therefore report `goal_success=null` / CSR `N/A`.
+Their `stage_success` additionally requires the default 120-step monitor to
+finish without detecting a third pour. A pour is counted from the manipulated
+object body: at least `0.15 rad` away from its stage baseline followed by a
+return to within `0.10 rad`.
 
 For official reporting, use the same adapter and scoring path consistently across all 1-26 tasks.

@@ -21,7 +21,13 @@ EPISODES_HEADER = [
     "seed",
     "score_pct",
     "tsr_success",
+    "stage_success",
     "goal",
+    "extra_pour_detected",
+    "pour_1_step",
+    "pour_2_step",
+    "extra_monitor_end_step",
+    "failure_reason",
     "prompt",
     "video_dir",
 ]
@@ -32,6 +38,7 @@ TASK_SUMMARY_HEADER = [
     "seed_start",
     "average_score_pct",
     "tsr_success_rate_pct",
+    "stage_success_rate_pct",
     "goal_success_rate_pct",
     "prompt",
     "video_dir",
@@ -52,6 +59,12 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--num-trials-per-task", type=int, default=50)
     parser.add_argument("--max-steps", type=int, default=3000)
     parser.add_argument("--post-goal-steps", type=int, default=200)
+    parser.add_argument(
+        "--fail-on-extra-pour",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument("--extra-pour-monitor-steps", type=int, default=120)
     parser.add_argument("--resize-size", type=int, default=256)
     parser.add_argument("--replan-steps", type=int, default=5)
     parser.add_argument("--num-steps-wait", type=int, default=10)
@@ -79,6 +92,8 @@ def _run_task(
     num_steps_wait: int,
     max_steps: int,
     post_goal_steps: int,
+    fail_on_extra_pour: bool,
+    extra_pour_monitor_steps: int,
     video_dir: Path,
     seed: int,
 ) -> dict[str, Any]:
@@ -107,6 +122,8 @@ def _run_task(
         num_steps_wait=num_steps_wait,
         max_steps=max_steps,
         post_goal_steps=post_goal_steps,
+        fail_on_extra_pour=fail_on_extra_pour,
+        extra_pour_monitor_steps=extra_pour_monitor_steps,
         video_out_path=str(video_dir),
         seed=seed,
     )
@@ -126,6 +143,7 @@ def _write_outputs(out_root: Path, results: list[dict[str, Any]], seed: int) -> 
         writer.writerow(EPISODES_HEADER)
         for result in results:
             for episode in result["episodes"]:
+                goal_success = episode.get("goal_success")
                 writer.writerow(
                     [
                         result["task_id"],
@@ -133,7 +151,13 @@ def _write_outputs(out_root: Path, results: list[dict[str, Any]], seed: int) -> 
                         episode["seed"],
                         f"{float(episode['score_pct']):.1f}",
                         "Y" if episode.get("tsr_success", False) else "N",
-                        "Y" if episode["goal_success"] else "N",
+                        "Y" if episode.get("stage_success", episode.get("tsr_success", False)) else "N",
+                        "N/A" if goal_success is None else ("Y" if goal_success else "N"),
+                        "Y" if episode.get("extra_pour_detected", False) else "N",
+                        episode.get("pour_1_step"),
+                        episode.get("pour_2_step"),
+                        episode.get("extra_monitor_end_step"),
+                        episode.get("failure_reason"),
                         result["prompt"],
                         result["video_dir"],
                     ]
@@ -143,6 +167,7 @@ def _write_outputs(out_root: Path, results: list[dict[str, Any]], seed: int) -> 
         writer = csv.writer(summary_f, delimiter="\t")
         writer.writerow(TASK_SUMMARY_HEADER)
         for result in results:
+            goal_rate = result.get("goal_success_rate_pct")
             writer.writerow(
                 [
                     result["task_id"],
@@ -150,7 +175,8 @@ def _write_outputs(out_root: Path, results: list[dict[str, Any]], seed: int) -> 
                     seed,
                     f"{float(result['average_score_pct']):.1f}",
                     f"{float(result.get('tsr_success_rate_pct', 0.0)):.1f}",
-                    f"{float(result['goal_success_rate_pct']):.1f}",
+                    f"{float(result.get('stage_success_rate_pct', result.get('tsr_success_rate_pct', 0.0))):.1f}",
+                    "N/A" if goal_rate is None else f"{float(goal_rate):.1f}",
                     result["prompt"],
                     result["video_dir"],
                 ]
@@ -160,6 +186,11 @@ def _write_outputs(out_root: Path, results: list[dict[str, Any]], seed: int) -> 
     summary_json.write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     num_tasks = len(results)
+    goal_rates = [
+        float(result["goal_success_rate_pct"])
+        for result in results
+        if result.get("goal_success_rate_pct") is not None
+    ]
     aggregate = {
         "num_tasks": num_tasks,
         "num_episodes": sum(len(result["episodes"]) for result in results),
@@ -170,9 +201,8 @@ def _write_outputs(out_root: Path, results: list[dict[str, Any]], seed: int) -> 
         "macro_tsr_success_rate_pct": (
             sum(float(result.get("tsr_success_rate_pct", 0.0)) for result in results) / max(1, num_tasks)
         ),
-        "macro_goal_success_rate_pct": (
-            sum(float(result["goal_success_rate_pct"]) for result in results) / max(1, num_tasks)
-        ),
+        "macro_goal_success_rate_pct": sum(goal_rates) / max(1, len(goal_rates)),
+        "num_goal_scored_tasks": len(goal_rates),
     }
     aggregate_json.write_text(json.dumps(aggregate, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -211,6 +241,8 @@ def main() -> None:
                     num_steps_wait=args.num_steps_wait,
                     max_steps=args.max_steps,
                     post_goal_steps=args.post_goal_steps,
+                    fail_on_extra_pour=args.fail_on_extra_pour,
+                    extra_pour_monitor_steps=args.extra_pour_monitor_steps,
                     video_dir=video_dir,
                     seed=args.seed,
                 )
