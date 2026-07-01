@@ -53,7 +53,7 @@ ENV_INIT_RETRY_SLEEP = float(os.environ.get("ENV_INIT_RETRY_SLEEP", "0.05"))
 PROMPT_MODE = os.environ.get("PROMPT_MODE", "fixed")
 PROMPT_POOL_NAME = os.environ.get("PROMPT_POOL_NAME")
 FAIL_ON_EXTRA_POUR = os.environ.get("FAIL_ON_EXTRA_POUR", "1").strip().lower() in {"1", "true", "yes", "y", "on"}
-EXTRA_POUR_MONITOR_STEPS = int(os.environ.get("POST_STAGE_STEPS", os.environ.get("EXTRA_POUR_MONITOR_STEPS", "100")))
+EXTRA_POUR_MONITOR_STEPS = int(os.environ.get("POST_STAGE_STEPS", os.environ.get("EXTRA_POUR_MONITOR_STEPS", "30")))
 
 
 @dataclass

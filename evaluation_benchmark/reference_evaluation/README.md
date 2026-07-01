@@ -107,7 +107,7 @@ Metric names:
 - `stage_score_pct`: partial stage/process completion score
 
 Counting-pour tasks 6, 7, 8, 9, 10, 15, 16, and 22 use stage-only scoring and
-do not call the BDDL goal checker. By default, the evaluator also monitors 100
+do not call the BDDL goal checker. By default, the evaluator also monitors 30
 environment steps after the second completed pour and rejects a third pour.
 Set `FAIL_ON_EXTRA_POUR=0` only for diagnostic runs; the default is `1`.
 Set `POST_STAGE_STEPS` to change the post-stage monitoring window.

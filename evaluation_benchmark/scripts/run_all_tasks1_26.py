@@ -69,7 +69,7 @@ def build_argparser() -> argparse.ArgumentParser:
         "--post-stage-steps",
         dest="extra_pour_monitor_steps",
         type=int,
-        default=100,
+        default=30,
     )
     parser.add_argument("--resize-size", type=int, default=256)
     parser.add_argument("--replan-steps", type=int, default=10)

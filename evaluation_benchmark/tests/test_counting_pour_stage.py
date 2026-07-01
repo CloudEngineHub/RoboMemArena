@@ -92,7 +92,7 @@ class CountingPourStageTest(unittest.TestCase):
             ["--task-id", "6", "--adapter-spec", "adapter.py:build", "--no-fail-on-extra-pour"]
         )
         self.assertTrue(default_args.fail_on_extra_pour)
-        self.assertEqual(default_args.extra_pour_monitor_steps, 100)
+        self.assertEqual(default_args.extra_pour_monitor_steps, 30)
         self.assertFalse(disabled_args.fail_on_extra_pour)
 
     def test_body_pour_requires_tilt_and_return(self) -> None:
