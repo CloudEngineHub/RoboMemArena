@@ -741,7 +741,7 @@ def main() -> None:
     args.vlm_use_wrist = os.environ.get("VLM_USE_WRIST", "1") in {"1", "true", "yes"}
     args.vlm_use_keyframe_memory = os.environ.get("VLM_USE_KEYFRAME_MEMORY", "1") in {"1", "true", "yes"}
     fail_on_extra_pour = os.environ.get("FAIL_ON_EXTRA_POUR", "1").strip().lower() in {"1", "true", "yes", "y", "on"}
-    extra_pour_monitor_steps = int(os.environ.get("EXTRA_POUR_MONITOR_STEPS", "120"))
+    extra_pour_monitor_steps = int(os.environ.get("POST_STAGE_STEPS", os.environ.get("EXTRA_POUR_MONITOR_STEPS", "100")))
     _apply_vlm_input_profile(args)
 
     out_root.mkdir(parents=True, exist_ok=True)

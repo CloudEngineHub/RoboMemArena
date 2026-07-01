@@ -64,7 +64,13 @@ def build_argparser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
     )
-    parser.add_argument("--extra-pour-monitor-steps", type=int, default=120)
+    parser.add_argument(
+        "--extra-pour-monitor-steps",
+        "--post-stage-steps",
+        dest="extra_pour_monitor_steps",
+        type=int,
+        default=100,
+    )
     parser.add_argument("--resize-size", type=int, default=256)
     parser.add_argument("--replan-steps", type=int, default=10)
     parser.add_argument("--num-steps-wait", type=int, default=10)

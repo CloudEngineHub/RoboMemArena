@@ -715,7 +715,7 @@ def run_eval_task(
     adapter_spec: str | None = None,
     adapter_kwargs: dict[str, Any] | None = None,
     fail_on_extra_pour: bool = True,
-    extra_pour_monitor_steps: int = 120,
+    extra_pour_monitor_steps: int = 100,
 ) -> dict[str, Any]:
     if task_id == 1:
         raise ValueError("Task 1 is intentionally excluded from eval_tasks2_26.py. Use eval_task1_only.py or reference_evaluation/task1_nomap_reference/eval_task1_nomap_reference.py.")
@@ -870,7 +870,13 @@ def build_argparser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
     )
-    parser.add_argument("--extra-pour-monitor-steps", type=int, default=120)
+    parser.add_argument(
+        "--extra-pour-monitor-steps",
+        "--post-stage-steps",
+        dest="extra_pour_monitor_steps",
+        type=int,
+        default=100,
+    )
     parser.add_argument("--video-out-path", default="outputs/tasks2_26_eval")
     parser.add_argument("--seed", type=int, default=100)
     return parser
