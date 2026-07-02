@@ -621,7 +621,12 @@ def run_episode_with_stateful_stages(
                 extra_pour_detected = True
                 logging.info(f"  [t={t}] Third pour detected; episode failed.")
 
-            if not counting_pour_task:
+            if _is_drawer_task(task_id):
+                if _stage_success_from_stage_done(task_id, stage_done):
+                    goal_reached_t = t
+                    logging.info(f"  [t={t}] Drawer required stages completed.")
+                    break
+            elif not counting_pour_task:
                 if goal_check_override is not None:
                     goal_success = goal_check_override(env, stage_done)
                 else:
@@ -649,8 +654,7 @@ def run_episode_with_stateful_stages(
     except Exception as exc:
         logging.exception(f"Episode failed: {exc}")
 
-    num_done = sum(1 for ok in stage_done.values() if ok)
-    score = 100.0 * num_done / max(1, len(stage_specs))
+    score = _stage_score_pct(task_id, stage_done)
     all_stages_complete = bool(stage_done) and all(stage_done.values())
     extra_monitor_complete = (
         not fail_on_extra_pour
@@ -659,13 +663,16 @@ def run_episode_with_stateful_stages(
             and t >= extra_monitor_deadline_t
         )
     )
-    stage_success = all_stages_complete and (
-        not counting_pour_task
-        or (extra_monitor_complete and not extra_pour_detected)
-    )
+    if _is_drawer_task(task_id):
+        stage_success = _stage_success_from_stage_done(task_id, stage_done)
+    else:
+        stage_success = all_stages_complete and (
+            not counting_pour_task
+            or (extra_monitor_complete and not extra_pour_detected)
+        )
     if extra_pour_detected:
         failure_reason = "extra_pour"
-    elif not all_stages_complete:
+    elif not stage_success:
         failure_reason = "incomplete_stage"
     elif counting_pour_task and not extra_monitor_complete:
         failure_reason = "monitor_incomplete"
@@ -683,7 +690,10 @@ def run_episode_with_stateful_stages(
         ),
         "failure_reason": failure_reason,
     }
-    goal_success = None if counting_pour_task else goal_reached_t is not None
+    if _is_drawer_task(task_id):
+        goal_success = _stage_success_from_stage_done(task_id, stage_done)
+    else:
+        goal_success = None if counting_pour_task else goal_reached_t is not None
     return score, stage_done, goal_success, diagnostics, replay, replay_wrist
 
 
@@ -694,8 +704,11 @@ from task2_26_reference_stage import (  # noqa: E402
     _build_initial_state,
     _extra_pour_check,
     _goal_override_check,
+    _is_drawer_task,
     _is_counting_pour_task,
     _patch_env_resolution,
+    _stage_score_pct,
+    _stage_success_from_stage_done,
     _task_specs,
     _update_state,
 )

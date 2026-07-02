@@ -443,6 +443,7 @@ def run_episode_async_stateful(
     current_stage_start = 0
     current_subtask_prompt = ""
     counting_pour_task = stage_eval._is_counting_pour_task(task_id)
+    drawer_task = stage_eval._is_drawer_task(task_id)
     goal_success: bool | None = None if counting_pour_task else False
     extra_pour_check = stage_eval._extra_pour_check(task_id)
     extra_monitor_start_state_idx: int | None = None
@@ -603,7 +604,12 @@ def run_episode_async_stateful(
                     logger.info("[t=%s] third pour detected; episode failed", t)
                     raise StopIteration
 
-                if not counting_pour_task:
+                if drawer_task:
+                    if stage_eval._stage_success_from_stage_done(task_id, stage_done):
+                        goal_success = True
+                        logger.info("[t=%s] drawer required stages done", t)
+                        raise StopIteration
+                elif not counting_pour_task:
                     if goal_check_override is not None:
                         goal_success = bool(goal_check_override(env, stage_done))
                     else:
@@ -638,9 +644,10 @@ def run_episode_async_stateful(
             if vlm_thread is not None and vlm_thread.is_alive():
                 vlm_thread.join(timeout=3.0)
 
-    num_done = sum(1 for ok in stage_done.values() if ok)
-    stage_pct = 100.0 * num_done / max(1, len(stage_specs))
-    if not counting_pour_task and not goal_success:
+    stage_pct = stage_eval._stage_score_pct(task_id, stage_done)
+    if drawer_task:
+        goal_success = stage_eval._stage_success_from_stage_done(task_id, stage_done)
+    elif not counting_pour_task and not goal_success:
         if goal_check_override is not None:
             goal_success = bool(goal_check_override(env, stage_done))
         else:
@@ -653,13 +660,16 @@ def run_episode_async_stateful(
             and t >= extra_monitor_deadline_t
         )
     )
-    stage_success = all_stages_complete and (
-        not counting_pour_task
-        or (extra_monitor_complete and not extra_pour_detected)
-    )
+    if drawer_task:
+        stage_success = stage_eval._stage_success_from_stage_done(task_id, stage_done)
+    else:
+        stage_success = all_stages_complete and (
+            not counting_pour_task
+            or (extra_monitor_complete and not extra_pour_detected)
+        )
     if extra_pour_detected:
         failure_reason = "extra_pour"
-    elif not all_stages_complete:
+    elif not stage_success:
         failure_reason = "incomplete_stage"
     elif counting_pour_task and not extra_monitor_complete:
         failure_reason = "monitor_incomplete"

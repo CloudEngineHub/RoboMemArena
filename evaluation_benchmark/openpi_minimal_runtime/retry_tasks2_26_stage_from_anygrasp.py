@@ -78,6 +78,41 @@ def _is_counting_pour_task(task_id: int) -> bool:
     return task_id in COUNTING_POUR_TASK_OBJECTS
 
 
+DRAWER_TASK_OPTIONAL_FINAL_STAGE = {
+    4: "09_Close_Top_Drawer_Final",
+    5: "09_Close_Middle_Drawer_Final",
+    11: "06_Close_Middle_Drawer",
+    12: "04_Close_Middle_Drawer",
+    13: "04_Close_Middle_Drawer",
+    14: "06_Close_Middle_Drawer",
+    17: "04_Close_Middle_Drawer",
+}
+
+
+def _is_drawer_task(task_id: int | None) -> bool:
+    return task_id in DRAWER_TASK_OPTIONAL_FINAL_STAGE
+
+
+def _optional_final_stage_name(task_id: int | None) -> str | None:
+    return DRAWER_TASK_OPTIONAL_FINAL_STAGE.get(task_id)
+
+
+def _counted_stage_names(task_id: int | None, stage_done: dict[str, bool]) -> list[str]:
+    optional_name = _optional_final_stage_name(task_id)
+    return [name for name in stage_done if name != optional_name]
+
+
+def _stage_success_from_stage_done(task_id: int | None, stage_done: dict[str, bool]) -> bool:
+    counted_names = _counted_stage_names(task_id, stage_done)
+    return bool(counted_names) and all(stage_done.get(name, False) for name in counted_names)
+
+
+def _stage_score_pct(task_id: int | None, stage_done: dict[str, bool]) -> float:
+    counted_names = _counted_stage_names(task_id, stage_done)
+    num_done = sum(1 for name in counted_names if stage_done.get(name, False))
+    return 100.0 * num_done / max(1, len(counted_names))
+
+
 def _is_randomization_error(exc: Exception) -> bool:
     if RobosuiteRandomizationError is not None and isinstance(exc, RobosuiteRandomizationError):
         return True
@@ -912,7 +947,12 @@ def run_episode_with_stateful_stages(
                 extra_pour_detected = True
                 logging.info(f"  [t={t}] Third pour detected; episode failed.")
 
-            if not counting_pour_task:
+            if _is_drawer_task(task_id):
+                if _stage_success_from_stage_done(task_id, stage_done):
+                    goal_success = True
+                    logging.info(f"  [t={t}] Drawer required stages completed.")
+                    break
+            elif not counting_pour_task:
                 if goal_check_override is not None:
                     goal_success = goal_check_override(env, stage_done)
                 else:
@@ -940,9 +980,10 @@ def run_episode_with_stateful_stages(
     except Exception as exc:
         logging.exception(f"Episode failed: {exc}")
 
-    num_done = sum(1 for ok in stage_done.values() if ok)
-    score = 100.0 * num_done / max(1, len(stage_specs))
-    if not counting_pour_task and not goal_success:
+    score = _stage_score_pct(task_id, stage_done)
+    if _is_drawer_task(task_id):
+        goal_success = _stage_success_from_stage_done(task_id, stage_done)
+    elif not counting_pour_task and not goal_success:
         if goal_check_override is not None:
             goal_success = goal_check_override(env, stage_done)
         else:
@@ -955,13 +996,16 @@ def run_episode_with_stateful_stages(
             and t >= extra_monitor_deadline_t
         )
     )
-    stage_success = all_stages_complete and (
-        not counting_pour_task
-        or (extra_monitor_complete and not extra_pour_detected)
-    )
+    if _is_drawer_task(task_id):
+        stage_success = _stage_success_from_stage_done(task_id, stage_done)
+    else:
+        stage_success = all_stages_complete and (
+            not counting_pour_task
+            or (extra_monitor_complete and not extra_pour_detected)
+        )
     if extra_pour_detected:
         failure_reason = "extra_pour"
-    elif not all_stages_complete:
+    elif not stage_success:
         failure_reason = "incomplete_stage"
     elif counting_pour_task and not extra_monitor_complete:
         failure_reason = "monitor_incomplete"
