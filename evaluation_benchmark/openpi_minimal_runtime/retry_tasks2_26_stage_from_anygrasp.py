@@ -44,7 +44,7 @@ MEM_OBS_STEPS = int(os.environ.get("MEM_OBS_STEPS", "4"))
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8000"))
 RESIZE_SIZE = int(os.environ.get("RESIZE_SIZE", "256"))
-REPLAN_STEPS = int(os.environ.get("REPLAN_STEPS", "10"))
+REPLAN_STEPS = int(os.environ.get("REPLAN_STEPS", "5"))
 NUM_STEPS_WAIT = int(os.environ.get("NUM_STEPS_WAIT", "10"))
 MAX_STEPS = int(os.environ.get("MAX_STEPS", "2000"))
 SEED = int(os.environ.get("SEED", "100"))
@@ -52,30 +52,12 @@ ENV_INIT_RETRIES = int(os.environ.get("ENV_INIT_RETRIES", "30"))
 ENV_INIT_RETRY_SLEEP = float(os.environ.get("ENV_INIT_RETRY_SLEEP", "0.05"))
 PROMPT_MODE = os.environ.get("PROMPT_MODE", "fixed")
 PROMPT_POOL_NAME = os.environ.get("PROMPT_POOL_NAME")
-FAIL_ON_EXTRA_POUR = os.environ.get("FAIL_ON_EXTRA_POUR", "1").strip().lower() in {"1", "true", "yes", "y", "on"}
-EXTRA_POUR_MONITOR_STEPS = int(os.environ.get("POST_STAGE_STEPS", os.environ.get("EXTRA_POUR_MONITOR_STEPS", "30")))
 
 
 @dataclass
 class StageSpec:
     name: str
     check_fn: Callable[[Any, dict[str, Any], int], bool]
-
-
-COUNTING_POUR_TASK_OBJECTS = {
-    6: "tomato_sauce_1",
-    7: "tomato_sauce_1",
-    8: "tomato_sauce_1",
-    9: "tomato_sauce_1",
-    10: "wine_bottle_1",
-    15: "milk_1",
-    16: "milk_1",
-    22: "tomato_sauce_1",
-}
-
-
-def _is_counting_pour_task(task_id: int) -> bool:
-    return task_id in COUNTING_POUR_TASK_OBJECTS
 
 
 DRAWER_TASK_OPTIONAL_FINAL_STAGE = {
@@ -153,6 +135,14 @@ def _current_site_pos(env: Any, name: str) -> np.ndarray | None:
         except Exception:
             continue
     return None
+
+
+def _current_target_center(env: Any, target_kind: str, target_name: str) -> np.ndarray | None:
+    if target_kind == "body":
+        return _current_body_pos(env, target_name)
+    if target_kind == "site":
+        return _current_site_pos(env, target_name)
+    raise ValueError(f"Unsupported target_kind: {target_kind}")
 
 
 def _initial_body_pos(state: dict[str, Any], name: str) -> np.ndarray | None:
@@ -244,6 +234,65 @@ def _tilt_from_quat(quat: np.ndarray) -> float:
     return float(np.arccos(np.clip(z_axis[2], -1.0, 1.0)))
 
 
+def _body_tilt_angle(env: Any, name: str) -> float | None:
+    for cand in _name_variants(name):
+        try:
+            bid = env.sim.model.body_name2id(cand)
+            mat = np.asarray(env.sim.data.body_xmat[bid], dtype=np.float64).reshape(3, 3)
+            z_axis = mat[:, 2]
+            return float(np.arccos(np.clip(z_axis[2], -1.0, 1.0)))
+        except Exception:
+            continue
+    return None
+
+
+def _body_axis_tilts(env: Any, name: str) -> tuple[float, float, float] | None:
+    for cand in _name_variants(name):
+        try:
+            bid = env.sim.model.body_name2id(cand)
+            mat = np.asarray(env.sim.data.body_xmat[bid], dtype=np.float64).reshape(3, 3)
+            return tuple(float(np.arccos(np.clip(mat[:, i][2], -1.0, 1.0))) for i in range(3))
+        except Exception:
+            continue
+    return None
+
+
+def _append_task6_tilt_debug(
+    *,
+    step_idx: int,
+    stage_start: int,
+    stage_len: int,
+    tilt: float,
+    baseline: float | None,
+    deviation: float | None,
+    max_deviation: float | None,
+    moved: bool,
+    returned: bool,
+    axis_tilts: tuple[float, float, float] | None,
+) -> None:
+    path = os.environ.get("TASK6_TILT_TRACE_CSV")
+    if not path:
+        return
+    trace_path = Path(path)
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not trace_path.exists()
+    ax = axis_tilts if axis_tilts is not None else (np.nan, np.nan, np.nan)
+    with trace_path.open("a", encoding="utf-8") as f:
+        if write_header:
+            f.write(
+                "step_idx,stage_start,stage_len,tilt_z,baseline_z,deviation_z,"
+                "max_deviation_z,moved,returned,axis_x_tilt,axis_y_tilt,axis_z_tilt\n"
+            )
+        f.write(
+            f"{step_idx},{stage_start},{stage_len},{tilt:.8f},"
+            f"{baseline if baseline is not None else np.nan:.8f},"
+            f"{deviation if deviation is not None else np.nan:.8f},"
+            f"{max_deviation if max_deviation is not None else np.nan:.8f},"
+            f"{int(moved)},{int(returned)},"
+            f"{ax[0]:.8f},{ax[1]:.8f},{ax[2]:.8f}\n"
+        )
+
+
 def _build_initial_state(env: Any) -> dict[str, Any]:
     body_names = [str(x) for x in env.sim.model.body_names]
     site_names = [str(x) for x in env.sim.model.site_names]
@@ -266,6 +315,7 @@ def _build_initial_state(env: Any) -> dict[str, Any]:
     return {
         "step_idx": 0,
         "tilt_angles": [],
+        "task6_tomato_tilt_records": [],
         "initial_body_pos": initial_body_pos,
         "initial_site_pos": initial_site_pos,
         "initial_joint_qpos": initial_joint_qpos,
@@ -572,17 +622,6 @@ def _near_fixed_position(
     return check
 
 
-def _body_tilt_angle(env: Any, name: str) -> float | None:
-    for cand in _name_variants(name):
-        try:
-            bid = env.sim.model.body_name2id(cand)
-            mat = np.asarray(env.sim.data.body_xmat[bid], dtype=np.float64).reshape(3, 3)
-            return float(np.arccos(np.clip(mat[:, 2][2], -1.0, 1.0)))
-        except Exception:
-            continue
-    return None
-
-
 def _pour_stage(
     range_thresh: float,
     min_steps: int,
@@ -605,6 +644,9 @@ def _pour_stage(
 
 def _body_pour_stage(
     obj_name: str,
+    target_kind: str,
+    target_name: str,
+    target_radius: float = 0.20,
     move_thresh: float = 0.15,
     return_thresh: float = 0.10,
     min_steps: int = 10,
@@ -612,41 +654,108 @@ def _body_pour_stage(
 ) -> Callable[[Any, dict[str, Any], int], bool]:
     def check(env: Any, state: dict[str, Any], stage_start: int) -> bool:
         tilt = _body_tilt_angle(env, obj_name)
-        if tilt is None:
+        src_pos = _current_body_pos(env, obj_name)
+        tgt_pos = _current_target_center(env, target_kind, target_name)
+        if tilt is None or src_pos is None or tgt_pos is None:
             return False
+        axis_tilts = _body_axis_tilts(env, obj_name)
         step_idx = int(state.get("step_idx", len(state.get("tilt_angles", []))))
         records = state.setdefault(f"pour_tilt_records_{obj_name}", [])
+        in_target = float(np.linalg.norm(src_pos[:2] - tgt_pos[:2])) <= float(target_radius)
         if not records or int(records[-1][0]) != step_idx:
-            records.append((step_idx, float(tilt)))
-        vals = np.asarray([v for step, v in records if int(step) >= int(stage_start)], dtype=np.float32)
-        vals = vals[np.isfinite(vals)]
+            records.append((step_idx, float(tilt), bool(in_target)))
+        stage_records = [(step, val, hit) for step, val, hit in records if int(step) >= int(stage_start)]
+        vals = np.asarray([val for _, val, _ in stage_records], dtype=np.float32)
+        in_target_flags = np.asarray([bool(hit) for _, _, hit in stage_records], dtype=bool)
+        finite_mask = np.isfinite(vals)
+        vals = vals[finite_mask]
+        in_target_flags = in_target_flags[finite_mask]
         if len(vals) < min_steps:
+            _append_task6_tilt_debug(
+                step_idx=step_idx,
+                stage_start=stage_start,
+                stage_len=len(vals),
+                tilt=float(tilt),
+                baseline=None,
+                deviation=None,
+                max_deviation=None,
+                moved=False,
+                returned=False,
+                axis_tilts=axis_tilts,
+            )
             return False
-        baseline = float(np.median(vals[: max(1, min(warmup, len(vals)))]))
+        if os.environ.get("TASK6_POUR_BASELINE_MODE", "").strip().lower() in {"vertical", "upright"}:
+            baseline = float(os.environ.get("TASK6_POUR_VERTICAL_BASELINE", "0.0"))
+        else:
+            baseline = float(np.median(vals[: max(1, min(warmup, len(vals)))]))
         deviations = np.abs(vals - baseline)
         moved = np.where(deviations >= move_thresh)[0]
+        max_deviation = float(np.max(deviations)) if len(deviations) else 0.0
+        returned = False
         if len(moved) == 0:
+            _append_task6_tilt_debug(
+                step_idx=step_idx,
+                stage_start=stage_start,
+                stage_len=len(vals),
+                tilt=float(tilt),
+                baseline=baseline,
+                deviation=float(abs(float(tilt) - baseline)),
+                max_deviation=max_deviation,
+                moved=False,
+                returned=False,
+                axis_tilts=axis_tilts,
+            )
             return False
-        return bool(np.any(deviations[int(moved[0]) + 1 :] <= return_thresh))
+        move_idx = int(moved[0])
+        return_candidates = np.where(deviations[move_idx + 1 :] <= return_thresh)[0]
+        returned = len(return_candidates) > 0
+        in_target_during_pour = False
+        if returned:
+            return_idx = move_idx + 1 + int(return_candidates[0])
+            in_target_during_pour = bool(np.any(in_target_flags[move_idx : return_idx + 1]))
+        _append_task6_tilt_debug(
+            step_idx=step_idx,
+            stage_start=stage_start,
+            stage_len=len(vals),
+            tilt=float(tilt),
+            baseline=baseline,
+            deviation=float(abs(float(tilt) - baseline)),
+            max_deviation=max_deviation,
+            moved=True,
+            returned=returned and in_target_during_pour,
+            axis_tilts=axis_tilts,
+        )
+        return returned and in_target_during_pour
 
     return check
+
+
+def _tomato_body_pour_stage(
+    target_kind: str,
+    target_name: str,
+    target_radius: float = 0.20,
+    move_thresh: float = 0.15,
+    return_thresh: float = 0.10,
+    min_steps: int = 10,
+    warmup: int = 5,
+) -> Callable[[Any, dict[str, Any], int], bool]:
+    return _body_pour_stage("tomato_sauce_1", target_kind, target_name, target_radius, move_thresh, return_thresh, min_steps, warmup)
 
 
 def _counting_pour_stages(
     obj_name: str,
     label: str,
-    start_index: int = 1,
+    target_kind: str,
+    target_name: str,
+    target_radius: float = 0.20,
+    move_thresh: float = 0.15,
+    return_thresh: float = 0.10,
 ) -> list[StageSpec]:
     return [
-        StageSpec(f"{start_index:02d}_Lift_{label}", _lift_rel(obj_name, 0.03)),
-        StageSpec(f"{start_index + 1:02d}_Pour_One", _body_pour_stage(obj_name)),
-        StageSpec(f"{start_index + 2:02d}_Pour_Two", _body_pour_stage(obj_name)),
+        StageSpec(f"01_Lift_{label}", _lift_rel(obj_name, 0.03)),
+        StageSpec("02_Pour_One", _body_pour_stage(obj_name, target_kind, target_name, target_radius, move_thresh, return_thresh)),
+        StageSpec("03_Pour_Two", _body_pour_stage(obj_name, target_kind, target_name, target_radius, move_thresh, return_thresh)),
     ]
-
-
-def _extra_pour_check(task_id: int) -> Callable[[Any, dict[str, Any], int], bool] | None:
-    obj_name = COUNTING_POUR_TASK_OBJECTS.get(task_id)
-    return _body_pour_stage(obj_name) if obj_name is not None else None
 
 
 def _task_specs(task_id: int) -> list[StageSpec]:
@@ -685,19 +794,15 @@ def _task_specs(task_id: int) -> list[StageSpec]:
             StageSpec("09_Close_Middle_Drawer_Final", _drawer_closed_abs("wooden_cabinet_1_middle_region", None, 0.08)),
         ]
     if task_id == 6:
-        return _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce")
+        return _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce", "body", "cookies_1")
     if task_id == 7:
-        return _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce")
+        return _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce", "site", "frypan_1_default_site")
     if task_id == 8:
-        return [
-            StageSpec("01_Place_Pudding_Frypan", _in_container_body("chocolate_pudding_1", "frypan_1", 0.10, -0.05, 0.15)),
-        ] + _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce", start_index=2)
+        return _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce", "body", "chocolate_pudding_1")
     if task_id == 9:
-        return [
-            StageSpec("01_Place_Butter_Frypan", _in_container_body("butter_1", "frypan_1", 0.10, -0.05, 0.15)),
-        ] + _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce", start_index=2)
+        return _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce", "body", "butter_1")
     if task_id == 10:
-        return _counting_pour_stages("wine_bottle_1", "Wine_Bottle")
+        return _counting_pour_stages("wine_bottle_1", "Wine_Bottle", "site", "white_yellow_mug_1_default_site")
     if task_id == 11:
         return [
             StageSpec("01_Open_Top_Drawer", _drawer_open_abs("wooden_cabinet_1_top_region", None, 0.10)),
@@ -731,11 +836,9 @@ def _task_specs(task_id: int) -> list[StageSpec]:
             StageSpec("06_Close_Middle_Drawer", _drawer_closed_abs("wooden_cabinet_1_middle_region", None, 0.08)),
         ]
     if task_id == 15:
-        return [
-            StageSpec("01_Place_Butter_Frypan", _in_container_body("butter_1", "frypan_1", 0.12, -0.05, 0.15)),
-        ] + _counting_pour_stages("milk_1", "Milk", start_index=2)
+        return _counting_pour_stages("milk_1", "Milk", "body", "butter_1")
     if task_id == 16:
-        return _counting_pour_stages("milk_1", "Milk")
+        return _counting_pour_stages("milk_1", "Milk", "site", "red_coffee_mug_1_default_site")
     if task_id == 17:
         return [
             StageSpec("01_Open_Middle_Drawer", _drawer_open_abs("wooden_cabinet_1_middle_region", None, 0.10)),
@@ -769,12 +872,7 @@ def _task_specs(task_id: int) -> list[StageSpec]:
             StageSpec("04_Close_Microwave", _microwave_closed(0.05)),
         ]
     if task_id == 22:
-        return _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce") + [
-            StageSpec("04_Place_Tomato_Aside", _near_fixed_position("tomato_sauce_1", np.array([0.0, -0.2, 0.50], dtype=np.float32), 0.20, 0.20)),
-            StageSpec("05_Open_Microwave", _microwave_open(0.30)),
-            StageSpec("06_Place_Cookies_Microwave", _in_microwave("cookies_1")),
-            StageSpec("07_Close_Microwave", _microwave_closed(0.05)),
-        ]
+        return _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce", "body", "cookies_1")
     if task_id == 23:
         return [
             StageSpec("01_Open_Microwave", _microwave_open(0.50)),
@@ -803,8 +901,8 @@ def _task_specs(task_id: int) -> list[StageSpec]:
 
 
 def _goal_override_check(task_id: int) -> Callable[[Any, dict[str, bool]], bool] | None:
-    if task_id in {18, 19}:
-        #  goal 
+    if task_id in {6, 7, 8, 9, 10, 15, 16, 18, 19, 22}:
+        # These tasks treat completing all ordered stages as goal success.
         return lambda env, stage_done: all(stage_done.values())
     return None
 
@@ -814,8 +912,7 @@ def _ensure_prompt_trace_tsv(path: Path) -> None:
     if path.exists():
         return
     path.write_text(
-        "task_id\ttrial\tseed\tchosen_prompt\tstage_success\tgoal_success\tstage_pct\t"
-        "extra_pour_detected\tpour_1_step\tpour_2_step\textra_monitor_end_step\tfailure_reason\n",
+        "task_id\ttrial\tseed\tchosen_prompt\tgoal_success\tstage_pct\n",
         encoding="utf-8",
     )
 
@@ -827,28 +924,22 @@ def _append_prompt_trace_row(
     trial: int,
     seed: int,
     chosen_prompt: str,
-    stage_success: bool,
-    goal_success: bool | None,
+    goal_success: bool,
     stage_pct: float,
-    diagnostics: dict[str, Any],
 ) -> None:
     _ensure_prompt_trace_tsv(path)
     with path.open("a", encoding="utf-8") as f:
         safe_prompt = chosen_prompt.replace("\t", " ").replace("\n", " ")
-        goal_text = "N/A" if goal_success is None else str(int(goal_success))
         f.write(
             f"{task_id}\t{trial}\t{seed}\t{safe_prompt}\t"
-            f"{int(stage_success)}\t{goal_text}\t{stage_pct:.1f}\t"
-            f"{int(diagnostics['extra_pour_detected'])}\t{diagnostics['pour_1_step']}\t"
-            f"{diagnostics['pour_2_step']}\t{diagnostics['extra_monitor_end_step']}\t"
-            f"{diagnostics['failure_reason']}\n"
+            f"{int(goal_success)}\t{stage_pct:.1f}\n"
         )
 
 
 def run_episode_with_stateful_stages(
-    task_id: int,
     env: Any,
     client: Any,
+    task_id: int,
     prompt: str,
     resize_size: int,
     replan_steps: int,
@@ -857,9 +948,7 @@ def run_episode_with_stateful_stages(
     stage_specs: list[StageSpec],
     goal_monitor_dict: dict[str, list[tuple[str, str]]],
     goal_check_override: Callable[[Any, dict[str, bool]], bool] | None,
-    fail_on_extra_pour: bool,
-    extra_pour_monitor_steps: int,
-) -> tuple[float, dict[str, bool], bool | None, dict[str, Any], list[np.ndarray], list[np.ndarray]]:
+) -> tuple[float, dict[str, bool], bool, list[np.ndarray], list[np.ndarray]]:
     obs = env.reset()
     replay: list[np.ndarray] = []
     replay_wrist: list[np.ndarray] = []
@@ -870,14 +959,7 @@ def run_episode_with_stateful_stages(
     t = 0
     state: dict[str, Any] | None = None
     current_stage_start = 0
-    goal_success: bool | None = None if _is_counting_pour_task(task_id) else False
-    counting_pour_task = _is_counting_pour_task(task_id)
-    extra_pour_check = _extra_pour_check(task_id)
-    extra_monitor_start_state_idx: int | None = None
-    extra_monitor_deadline_t: int | None = None
-    extra_pour_detected = False
-    pour_1_step: int | None = None
-    pour_2_step: int | None = None
+    goal_success = False
     build_element = ec.build_policy_input_builder(
         resize_size=resize_size,
         prompt=prompt,
@@ -914,65 +996,27 @@ def run_episode_with_stateful_stages(
                 spec = stage_specs[stage_idx]
                 if spec.check_fn(env, state, current_stage_start):
                     stage_done[spec.name] = True
-                    logging.info(f"  [t={t}] : {spec.name}")
-                    if spec.name.endswith("_Pour_One"):
-                        pour_1_step = t
-                    elif spec.name.endswith("_Pour_Two"):
-                        pour_2_step = t
-                        if counting_pour_task and fail_on_extra_pour:
-                            extra_monitor_start_state_idx = int(state["step_idx"])
-                            extra_monitor_deadline_t = t + extra_pour_monitor_steps
-                            logging.info(
-                                "  [t=%s] Extra-pour monitor started; deadline=%s.",
-                                t,
-                                extra_monitor_deadline_t,
-                            )
+                    logging.info(f"  [t={t}] stage complete: {spec.name}")
                     stage_idx += 1
                     current_stage_start = state["step_idx"]
 
             if stage_idx >= len(stage_specs) and not all_stages_logged:
-                logging.info(f"  [t={t}] !")
+                logging.info(f"  [t={t}] all stages complete")
                 all_stages_logged = True
-
-            if (
-                counting_pour_task
-                and fail_on_extra_pour
-                and extra_pour_check is not None
-                and extra_monitor_start_state_idx is not None
-                and extra_monitor_deadline_t is not None
-                and pour_2_step is not None
-                and pour_2_step < t <= extra_monitor_deadline_t
-                and extra_pour_check(env, state, extra_monitor_start_state_idx)
-            ):
-                extra_pour_detected = True
-                logging.info(f"  [t={t}] Third pour detected; episode failed.")
 
             if _is_drawer_task(task_id):
                 if _stage_success_from_stage_done(task_id, stage_done):
                     goal_success = True
-                    logging.info(f"  [t={t}] Drawer required stages completed.")
+                    logging.info(f"  [t={t}] drawer required stages complete; stopping episode")
                     break
-            elif not counting_pour_task:
+            else:
                 if goal_check_override is not None:
                     goal_success = goal_check_override(env, stage_done)
                 else:
                     goal_success = ec.check_goal_success(env, goal_monitor_dict) if goal_monitor_dict else False
                 if goal_success:
-                    logging.info(f"  [t={t}] BDDL goal ，!")
+                    logging.info(f"  [t={t}] goal reached; stopping episode")
                     break
-
-            all_stages_complete = bool(stage_done) and all(stage_done.values())
-            extra_monitor_complete = (
-                not fail_on_extra_pour
-                or (
-                    extra_monitor_deadline_t is not None
-                    and t >= extra_monitor_deadline_t
-                )
-            )
-            if counting_pour_task and (
-                extra_pour_detected or (all_stages_complete and extra_monitor_complete)
-            ):
-                break
 
             if done:
                 break
@@ -983,47 +1027,12 @@ def run_episode_with_stateful_stages(
     score = _stage_score_pct(task_id, stage_done)
     if _is_drawer_task(task_id):
         goal_success = _stage_success_from_stage_done(task_id, stage_done)
-    elif not counting_pour_task and not goal_success:
+    elif not goal_success:
         if goal_check_override is not None:
             goal_success = goal_check_override(env, stage_done)
         else:
             goal_success = ec.check_goal_success(env, goal_monitor_dict) if goal_monitor_dict else False
-    all_stages_complete = bool(stage_done) and all(stage_done.values())
-    extra_monitor_complete = (
-        not fail_on_extra_pour
-        or (
-            extra_monitor_deadline_t is not None
-            and t >= extra_monitor_deadline_t
-        )
-    )
-    if _is_drawer_task(task_id):
-        stage_success = _stage_success_from_stage_done(task_id, stage_done)
-    else:
-        stage_success = all_stages_complete and (
-            not counting_pour_task
-            or (extra_monitor_complete and not extra_pour_detected)
-        )
-    if extra_pour_detected:
-        failure_reason = "extra_pour"
-    elif not stage_success:
-        failure_reason = "incomplete_stage"
-    elif counting_pour_task and not extra_monitor_complete:
-        failure_reason = "monitor_incomplete"
-    else:
-        failure_reason = None
-    diagnostics = {
-        "stage_success": bool(stage_success),
-        "extra_pour_detected": bool(extra_pour_detected),
-        "pour_1_step": pour_1_step,
-        "pour_2_step": pour_2_step,
-        "extra_monitor_end_step": (
-            extra_monitor_deadline_t
-            if extra_monitor_deadline_t is not None and t >= extra_monitor_deadline_t
-            else None
-        ),
-        "failure_reason": failure_reason,
-    }
-    return score, stage_done, goal_success, diagnostics, replay, replay_wrist
+    return score, stage_done, goal_success, replay, replay_wrist
 
 
 def run_eval_task(
@@ -1089,14 +1098,12 @@ def run_eval_task(
     client = ec._websocket_client_policy.WebsocketClientPolicy(host, port)
 
     stage_specs = _task_specs(task_id)
-    counting_pour_task = _is_counting_pour_task(task_id)
-    goal_monitor_dict = {} if counting_pour_task else ec._build_goal_monitor_dict(bddl_path)
+    goal_monitor_dict = ec._build_goal_monitor_dict(bddl_path)
     goal_check_override = _goal_override_check(task_id)
 
     total_score = 0.0
     stage_totals = {spec.name: 0 for spec in stage_specs}
     goal_succ_cnt = 0
-    stage_succ_cnt = 0
 
     for ep in range(num_trials_per_task):
         current_seed = seed + ep
@@ -1115,10 +1122,10 @@ def run_eval_task(
         )
         logging.info(f"Episode {ep} (seed={current_seed}) prompt: {chosen_prompt}")
 
-        score, stage_done, goal_success, diagnostics, replay, replay_wrist = run_episode_with_stateful_stages(
-            task_id=task_id,
+        score, stage_done, goal_success, replay, replay_wrist = run_episode_with_stateful_stages(
             env=env,
             client=client,
+            task_id=task_id,
             prompt=chosen_prompt,
             resize_size=resize_size,
             replan_steps=replan_steps,
@@ -1127,22 +1134,13 @@ def run_eval_task(
             stage_specs=stage_specs,
             goal_monitor_dict=goal_monitor_dict,
             goal_check_override=goal_check_override,
-            fail_on_extra_pour=FAIL_ON_EXTRA_POUR,
-            extra_pour_monitor_steps=EXTRA_POUR_MONITOR_STEPS,
         )
         total_score += score
         for name, ok in stage_done.items():
             stage_totals[name] += int(ok)
-        stage_succ_cnt += int(diagnostics["stage_success"])
-        if goal_success is not None:
-            goal_succ_cnt += int(goal_success)
+        goal_succ_cnt += int(goal_success)
 
-        base_name = ec.get_video_basename(
-            task_id,
-            ep,
-            current_seed,
-            diagnostics["stage_success"] if counting_pour_task else bool(goal_success),
-        )
+        base_name = ec.get_video_basename(task_id, ep, current_seed, goal_success)
         if replay:
             imageio.mimwrite(video_dir / f"{base_name}.mp4", replay, fps=10)
         if replay_wrist:
@@ -1150,10 +1148,7 @@ def run_eval_task(
 
         stages_str = " | ".join(f"{n}={'Y' if stage_done[n] else 'N'}" for n in stage_done)
         logging.info(
-            f"Episode {ep} (seed={current_seed}): score={score:.0f}% | prompt={chosen_prompt} | {stages_str} | "
-            f"stage_success={'Y' if diagnostics['stage_success'] else 'N'} | "
-            f"goal={'N/A' if goal_success is None else ('Y' if goal_success else 'N')} | "
-            f"failure_reason={diagnostics['failure_reason']}"
+            f"Episode {ep} (seed={current_seed}): score={score:.0f}% | prompt={chosen_prompt} | {stages_str} | goal={'Y' if goal_success else 'N'}"
         )
         if prompt_trace_path is not None:
             _append_prompt_trace_row(
@@ -1162,10 +1157,8 @@ def run_eval_task(
                 trial=ep,
                 seed=current_seed,
                 chosen_prompt=chosen_prompt,
-                stage_success=bool(diagnostics["stage_success"]),
                 goal_success=goal_success,
                 stage_pct=score,
-                diagnostics=diagnostics,
             )
 
     env.close()
@@ -1173,15 +1166,13 @@ def run_eval_task(
     n = num_trials_per_task
     avg_score = total_score / max(1, n)
     logging.info("============================================================")
-    logging.info(f" - :  = {avg_score:.1f}%")
+    logging.info(f"final stage score avg = {avg_score:.1f}%")
     for name, cnt in stage_totals.items():
         logging.info(f"  {name}: {cnt}/{n} ({(cnt / max(1, n)) * 100:.0f}%)")
-    stage_pct = 100.0 * stage_succ_cnt / max(1, n)
-    logging.info(f" - stage-only success: {stage_succ_cnt}/{n} ({stage_pct:.1f}%)")
-    if not counting_pour_task and goal_monitor_dict:
+    if goal_monitor_dict:
         goal_pct = 100.0 * goal_succ_cnt / max(1, n)
-        logging.info(f" - BDDL goal : {goal_succ_cnt}/{n} ({goal_pct:.1f}%)")
-    logging.info(f": {video_dir}")
+        logging.info(f"final goal success: {goal_succ_cnt}/{n} ({goal_pct:.1f}%)")
+    logging.info(f"video output: {video_dir}")
     logging.info("============================================================")
 
 

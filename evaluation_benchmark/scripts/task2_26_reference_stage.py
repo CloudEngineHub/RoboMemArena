@@ -20,23 +20,6 @@ class StageSpec:
     name: str
     check_fn: Callable[[Any, dict[str, Any], int], bool]
 
-
-COUNTING_POUR_TASK_OBJECTS = {
-    6: "tomato_sauce_1",
-    7: "tomato_sauce_1",
-    8: "tomato_sauce_1",
-    9: "tomato_sauce_1",
-    10: "wine_bottle_1",
-    15: "milk_1",
-    16: "milk_1",
-    22: "tomato_sauce_1",
-}
-
-
-def _is_counting_pour_task(task_id: int) -> bool:
-    return task_id in COUNTING_POUR_TASK_OBJECTS
-
-
 DRAWER_TASK_OPTIONAL_FINAL_STAGE = {
     4: "09_Close_Top_Drawer_Final",
     5: "09_Close_Middle_Drawer_Final",
@@ -71,6 +54,7 @@ def _stage_score_pct(task_id: int | None, stage_done: dict[str, bool]) -> float:
     num_done = sum(1 for name in counted_names if stage_done.get(name, False))
     return 100.0 * num_done / max(1, len(counted_names))
 
+
 def _patch_env_resolution() -> None:
     base_env = ec._get_env_class()
     orig_init = base_env.__init__
@@ -102,6 +86,13 @@ def _current_site_pos(env: Any, name: str) -> np.ndarray | None:
         except Exception:
             continue
     return None
+
+def _current_target_center(env: Any, target_kind: str, target_name: str) -> np.ndarray | None:
+    if target_kind == "body":
+        return _current_body_pos(env, target_name)
+    if target_kind == "site":
+        return _current_site_pos(env, target_name)
+    raise ValueError(f"Unsupported target_kind: {target_kind}")
 
 def _initial_body_pos(state: dict[str, Any], name: str) -> np.ndarray | None:
     for cand in _name_variants(name):
@@ -567,6 +558,9 @@ def _pour_stage(
 
 def _body_pour_stage(
     obj_name: str,
+    target_kind: str,
+    target_name: str,
+    target_radius: float = 0.20,
     move_thresh: float = 0.15,
     return_thresh: float = 0.10,
     min_steps: int = 10,
@@ -574,15 +568,22 @@ def _body_pour_stage(
 ) -> Callable[[Any, dict[str, Any], int], bool]:
     def check(env: Any, state: dict[str, Any], stage_start: int) -> bool:
         tilt = _body_tilt_angle(env, obj_name)
-        if tilt is None:
+        src_pos = _current_body_pos(env, obj_name)
+        tgt_pos = _current_target_center(env, target_kind, target_name)
+        if tilt is None or src_pos is None or tgt_pos is None:
             return False
         axis_tilts = _body_axis_tilts(env, obj_name)
         step_idx = int(state.get("step_idx", len(state.get("tilt_angles", []))))
         records = state.setdefault(f"pour_tilt_records_{obj_name}", [])
+        in_target = float(np.linalg.norm(src_pos[:2] - tgt_pos[:2])) <= float(target_radius)
         if not records or int(records[-1][0]) != step_idx:
-            records.append((step_idx, float(tilt)))
-        vals = np.asarray([v for step, v in records if int(step) >= int(stage_start)], dtype=np.float32)
-        vals = vals[np.isfinite(vals)]
+            records.append((step_idx, float(tilt), bool(in_target)))
+        stage_records = [(step, val, hit) for step, val, hit in records if int(step) >= int(stage_start)]
+        vals = np.asarray([val for _, val, _ in stage_records], dtype=np.float32)
+        in_target_flags = np.asarray([bool(hit) for _, _, hit in stage_records], dtype=bool)
+        finite_mask = np.isfinite(vals)
+        vals = vals[finite_mask]
+        in_target_flags = in_target_flags[finite_mask]
         if len(vals) < min_steps:
             _append_task6_tilt_debug(
                 step_idx=step_idx,
@@ -616,7 +617,13 @@ def _body_pour_stage(
                 axis_tilts=axis_tilts,
             )
             return False
-        returned = int(np.sum(deviations[int(moved[0]) + 1 :] <= return_thresh)) > 0
+        move_idx = int(moved[0])
+        return_candidates = np.where(deviations[move_idx + 1 :] <= return_thresh)[0]
+        returned = len(return_candidates) > 0
+        in_target_during_pour = False
+        if returned:
+            return_idx = move_idx + 1 + int(return_candidates[0])
+            in_target_during_pour = bool(np.any(in_target_flags[move_idx : return_idx + 1]))
         _append_task6_tilt_debug(
             step_idx=step_idx,
             stage_start=stage_start,
@@ -626,38 +633,38 @@ def _body_pour_stage(
             deviation=float(abs(float(tilt) - baseline)),
             max_deviation=max_deviation,
             moved=True,
-            returned=returned,
+            returned=returned and in_target_during_pour,
             axis_tilts=axis_tilts,
         )
-        return returned
+        return returned and in_target_during_pour
 
     return check
 
-
 def _tomato_body_pour_stage(
+    target_kind: str,
+    target_name: str,
+    target_radius: float = 0.20,
     move_thresh: float = 0.15,
     return_thresh: float = 0.10,
     min_steps: int = 10,
     warmup: int = 5,
 ) -> Callable[[Any, dict[str, Any], int], bool]:
-    return _body_pour_stage("tomato_sauce_1", move_thresh, return_thresh, min_steps, warmup)
-
+    return _body_pour_stage("tomato_sauce_1", target_kind, target_name, target_radius, move_thresh, return_thresh, min_steps, warmup)
 
 def _counting_pour_stages(
     obj_name: str,
     label: str,
-    start_index: int = 1,
+    target_kind: str,
+    target_name: str,
+    target_radius: float = 0.20,
+    move_thresh: float = 0.15,
+    return_thresh: float = 0.10,
 ) -> list[StageSpec]:
     return [
-        StageSpec(f"{start_index:02d}_Lift_{label}", _lift_rel(obj_name, 0.03)),
-        StageSpec(f"{start_index + 1:02d}_Pour_One", _body_pour_stage(obj_name)),
-        StageSpec(f"{start_index + 2:02d}_Pour_Two", _body_pour_stage(obj_name)),
+        StageSpec(f"01_Lift_{label}", _lift_rel(obj_name, 0.03)),
+        StageSpec("02_Pour_One", _body_pour_stage(obj_name, target_kind, target_name, target_radius, move_thresh, return_thresh)),
+        StageSpec("03_Pour_Two", _body_pour_stage(obj_name, target_kind, target_name, target_radius, move_thresh, return_thresh)),
     ]
-
-
-def _extra_pour_check(task_id: int) -> Callable[[Any, dict[str, Any], int], bool] | None:
-    obj_name = COUNTING_POUR_TASK_OBJECTS.get(task_id)
-    return _body_pour_stage(obj_name) if obj_name is not None else None
 
 def _task_specs(task_id: int) -> list[StageSpec]:
     if task_id == 2:
@@ -695,19 +702,15 @@ def _task_specs(task_id: int) -> list[StageSpec]:
             StageSpec("09_Close_Middle_Drawer_Final", _drawer_closed_abs("wooden_cabinet_1_middle_region", None, 0.08)),
         ]
     if task_id == 6:
-        return _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce")
+        return _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce", "body", "cookies_1")
     if task_id == 7:
-        return _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce")
+        return _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce", "site", "frypan_1_default_site")
     if task_id == 8:
-        return [
-            StageSpec("01_Place_Pudding_Frypan", _in_container_body("chocolate_pudding_1", "frypan_1", 0.10, -0.05, 0.15)),
-        ] + _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce", start_index=2)
+        return _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce", "body", "chocolate_pudding_1")
     if task_id == 9:
-        return [
-            StageSpec("01_Place_Butter_Frypan", _in_container_body("butter_1", "frypan_1", 0.10, -0.05, 0.15)),
-        ] + _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce", start_index=2)
+        return _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce", "body", "butter_1")
     if task_id == 10:
-        return _counting_pour_stages("wine_bottle_1", "Wine_Bottle")
+        return _counting_pour_stages("wine_bottle_1", "Wine_Bottle", "site", "white_yellow_mug_1_default_site")
     if task_id == 11:
         return [
             StageSpec("01_Open_Top_Drawer", _drawer_open_abs("wooden_cabinet_1_top_region", None, 0.10)),
@@ -741,11 +744,9 @@ def _task_specs(task_id: int) -> list[StageSpec]:
             StageSpec("06_Close_Middle_Drawer", _drawer_closed_abs("wooden_cabinet_1_middle_region", None, 0.08)),
         ]
     if task_id == 15:
-        return [
-            StageSpec("01_Place_Butter_Frypan", _in_container_body("butter_1", "frypan_1", 0.12, -0.05, 0.15)),
-        ] + _counting_pour_stages("milk_1", "Milk", start_index=2)
+        return _counting_pour_stages("milk_1", "Milk", "body", "butter_1")
     if task_id == 16:
-        return _counting_pour_stages("milk_1", "Milk")
+        return _counting_pour_stages("milk_1", "Milk", "site", "red_coffee_mug_1_default_site")
     if task_id == 17:
         return [
             StageSpec("01_Open_Middle_Drawer", _drawer_open_abs("wooden_cabinet_1_middle_region", None, 0.10)),
@@ -779,12 +780,7 @@ def _task_specs(task_id: int) -> list[StageSpec]:
             StageSpec("04_Close_Microwave", _microwave_closed(0.05)),
         ]
     if task_id == 22:
-        return _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce") + [
-            StageSpec("04_Place_Tomato_Aside", _near_fixed_position("tomato_sauce_1", np.array([0.0, -0.2, 0.50], dtype=np.float32), 0.20, 0.20)),
-            StageSpec("05_Open_Microwave", _microwave_open(0.30)),
-            StageSpec("06_Place_Cookies_Microwave", _in_microwave("cookies_1")),
-            StageSpec("07_Close_Microwave", _microwave_closed(0.05)),
-        ]
+        return _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce", "body", "cookies_1")
     if task_id == 23:
         return [
             StageSpec("01_Open_Microwave", _microwave_open(0.50)),
@@ -812,7 +808,7 @@ def _task_specs(task_id: int) -> list[StageSpec]:
     raise ValueError(f"Unsupported task_id={task_id}")
 
 def _goal_override_check(task_id: int) -> Callable[[Any, dict[str, bool]], bool] | None:
-    if task_id in {18, 19}:
-        #  goal 
+    if task_id in {6, 7, 8, 9, 10, 15, 16, 18, 19, 22}:
+        # These tasks treat completing all ordered stages as goal success.
         return lambda env, stage_done: all(stage_done.values())
     return None
