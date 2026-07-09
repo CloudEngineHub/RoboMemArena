@@ -11,7 +11,7 @@ Use this folder if you want to reproduce or inspect the 26-task async evaluation
 - task-conditioned VLM prompting with historical keyframes and recent visual context
 - corrected metric naming:
   - `CSR`: average stage/process completion percentage
-  - `TSR`: final BDDL goal success rate
+  - `TSR`: strict required-stage completion rate
 
 This is one reference integration path. The model-agnostic benchmark interface remains in `evaluation_benchmark/scripts/`.
 
@@ -116,7 +116,7 @@ ${OUT_ROOT}/task*/ep*/sync_vlm_trace.jsonl
 `summary.tsv` reports:
 
 - `csr`: average stage/process completion percentage for the task
-- `tsr`: final BDDL goal success rate for the task
+- `tsr`: strict required-stage completion rate for the task
 
 `aggregate.json` reports macro averages over completed tasks:
 

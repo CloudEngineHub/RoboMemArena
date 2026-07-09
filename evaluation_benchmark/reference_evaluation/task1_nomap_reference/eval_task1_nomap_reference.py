@@ -33,22 +33,26 @@ import websockets.exceptions
 # 1) OPENPI_ROOT (if explicitly provided)
 # 2) repo-bundled minimal runtime under third_party/openpi_minimal
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+EVAL_BENCHMARK_DIR = REPO_ROOT / "evaluation_benchmark"
 DEFAULT_OPENPI_ROOT = REPO_ROOT / "third_party" / "openpi_minimal"
 OPENPI_ROOT = pathlib.Path(
     os.environ.get("OPENPI_ROOT", str(DEFAULT_OPENPI_ROOT))
 ).resolve()
+RUNTIME_DIR = EVAL_BENCHMARK_DIR / "openpi_minimal_runtime"
+SCRIPTS_DIR = EVAL_BENCHMARK_DIR / "scripts"
 DRAWER_DIR = os.path.join(str(OPENPI_ROOT), "examples", "robocerebra_drawer")
 HIGH_QWEN_DIR = os.path.join(DRAWER_DIR, "high_qwen")
 OPENPI_CLIENT_SRC = os.path.join(str(OPENPI_ROOT), "packages", "openpi-client", "src")
 OPENPI_SRC = os.path.join(str(OPENPI_ROOT), "packages", "openpi", "src")
 
-for path in [DRAWER_DIR, HIGH_QWEN_DIR, OPENPI_CLIENT_SRC, OPENPI_SRC]:
+for path in [str(RUNTIME_DIR), str(SCRIPTS_DIR), DRAWER_DIR, HIGH_QWEN_DIR, OPENPI_CLIENT_SRC, OPENPI_SRC]:
     if path not in sys.path:
         sys.path.insert(0, path)
 
 # VLM 
 from transformers import AutoProcessor, AutoModelForCausalLM
 from keyframe_selection import build_visual_memory, get_frames_from_indices
+import task2_26_reference_stage as stage_eval
 
 # VLA client
 from openpi_client import websocket_client_policy as _websocket_client_policy
@@ -195,8 +199,8 @@ class Args:
     # =====  =====
     num_steps_wait: int = 5
     num_trials_per_task: int = 3
-    max_steps: int = 2000
-    seed: int = 42
+    max_steps: int = 2500
+    seed: int = 100
     websocket_ping_interval: float | None = None
     websocket_ping_timeout: float | None = None
     websocket_close_timeout: float = 30.0
@@ -1186,6 +1190,11 @@ def run_episode_async(
     obs = env.reset()
     current_subtask_prompt = ""
     replay = []
+    stage_specs = stage_eval._task_specs(1)
+    stage_done = {spec.name: False for spec in stage_specs}
+    stage_idx = 0
+    stage_state = stage_eval._build_initial_state(env)
+    current_stage_start = int(stage_state["step_idx"])
     recent_vlm_frames: deque[tuple[np.ndarray, Optional[np.ndarray]]] = deque(maxlen=args.n_recent)
     worker_error: list[str] = []
     worker_stop = threading.Event()
@@ -1357,18 +1366,22 @@ def run_episode_async(
                 recent_vlm_frames.append(
                     _extract_vlm_frame(env, obs, args, vlm_camera_pose)
                 )
+                stage_eval._update_state(obs, stage_state)
                 t += 1
                 _submit_vlm_job(t - args.num_steps_wait)
 
-                # ， done 
-                try:
-                    if env.check_success():
+                if stage_idx < len(stage_specs):
+                    spec = stage_specs[stage_idx]
+                    if spec.check_fn(env, stage_state, current_stage_start):
+                        stage_done[spec.name] = True
+                        stage_idx += 1
+                        current_stage_start = int(stage_state["step_idx"])
                         if logger:
-                            logger.info(f"[SUCCESS] t={t}, env.check_success()=True")
-                        return True, replay
-                except Exception:
-                    #  check_success， done 
-                    pass
+                            logger.info(f"[t={t}] stage done: {spec.name}")
+                if stage_eval._stage_success_from_stage_done(1, stage_done):
+                    if logger:
+                        logger.info(f"[SUCCESS] t={t}, Task1 required stages done")
+                    return True, replay
 
                 if done:
                     if logger:

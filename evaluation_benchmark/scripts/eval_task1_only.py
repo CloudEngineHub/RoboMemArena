@@ -7,13 +7,14 @@ import logging
 import numpy as np
 
 import eval_common as ec
-from eval_common import make_obj_in_basket_check, parse_adapter_kwargs
+import task2_26_reference_stage as stage_eval
+from eval_common import parse_adapter_kwargs
 
 TASK_ID = 1
 
 STAGE_CHECKS = [
-    ("cookies_in_basket", make_obj_in_basket_check("cookies_1_main")),
-    ("tomato_in_basket", make_obj_in_basket_check("tomato_sauce_1_main")),
+    (spec.name, lambda env, spec=spec: spec.check_fn(env, {}, 0))
+    for spec in stage_eval._task_specs(TASK_ID)
 ]
 
 
@@ -27,7 +28,7 @@ class Args:
     replan_steps: int = 10
     num_steps_wait: int = 10
     num_trials_per_task: int = 10
-    max_steps: int = 2000
+    max_steps: int = 2500
     post_goal_steps: int = 200
     video_out_path: str = "outputs/task1_eval"
     seed: int = 100
@@ -43,7 +44,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--replan-steps", type=int, default=10)
     parser.add_argument("--num-steps-wait", type=int, default=10)
     parser.add_argument("--num-trials-per-task", type=int, default=10)
-    parser.add_argument("--max-steps", type=int, default=2000)
+    parser.add_argument("--max-steps", type=int, default=2500)
     parser.add_argument("--post-goal-steps", type=int, default=200)
     parser.add_argument("--video-out-path", default="outputs/task1_eval")
     parser.add_argument("--seed", type=int, default=100)

@@ -28,6 +28,35 @@ from policy_adapter import BasePolicyAdapter, build_eval26_policy_input, ensure_
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 _PATCHED_ENV_RESOLUTION: tuple[int, int] | None = None
 
+TASK_PROMPTS = {
+    "task1": "Pick and place cookies into the basket, then pick and place tomato sauce into the same basket.",
+    "task2": "Pick and place butter into the basket, then pick and place popcorn into the same basket.",
+    "task3": "Pick and place cream into the basket, then pick and place chocolate into the same basket.",
+    "task4": "Open and close all drawers in order to check. Put butter into the drawer that already contains an object.",
+    "task5": "Open and close all drawers in order to check. Put butter into the empty drawer.",
+    "task6": "Pour tomato sauce over cookies twice and place the sauce bottle into the bowl drainer.",
+    "task7": "Pour tomato sauce over the frypan twice and place the sauce bottle into the bowl drainer.",
+    "task8": "Pick and place chocolate into the frypan, pour tomato sauce over it twice, then place the sauce bottle into the bowl drainer.",
+    "task9": "Put butter into the frypan, pour tomato sauce over it twice, then place the sauce bottle into the bowl drainer.",
+    "task10": "Pour wine into the mug twice.",
+    "task11": "Put cookies into the top drawer and put butter into another drawer.",
+    "task12": "Put cookies into the middle drawer and then put chocolate into the same drawer.",
+    "task13": "Put cookies into the middle drawer and then put butter into the same drawer.",
+    "task14": "Put cookies into the top drawer and put chocolate into another drawer.",
+    "task15": "Pick and place butter into the frypan, then pour milk over it twice.",
+    "task16": "Pick milk from the table, pour it into the mug twice, then place the milk container into the bowl drainer.",
+    "task17": "Put butter into the middle drawer and then put chocolate into the same drawer.",
+    "task18": "Pick and place chocolate and butter from cabinet1 to cabinet2, respectively.",
+    "task19": "Pick and place tomato sauce, milk, and orange juice from cabinet1 to cabinet2.",
+    "task20": "Put cookies into the microwave and then put chocolate into the location where the cookies were placed.",
+    "task21": "Put butter into the microwave and then put chocolate into the location where the butter was placed.",
+    "task22": "Pour tomato sauce over cookies twice, then put the cookies into the microwave.",
+    "task23": "Put cream into the microwave and then put popcorn into the location where the cream was placed.",
+    "task24": "Put cookies into the microwave and then put popcorn into the location where the cookies were placed.",
+    "task25": "Pick and place butter and cream from plate1 to plate2, respectively.",
+    "task26": "Pick and place chocolate and cream from plate1 to plate2, respectively.",
+}
+
 
 def _resolve_task_id(task_id: int | str) -> tuple[int | None, str]:
     if isinstance(task_id, int):
@@ -72,6 +101,8 @@ def _stem_to_prompt(stem: str) -> str:
 
 def get_prompt(task_id: str, fallback_task_name: str = "") -> str:
     """Return a readable task prompt derived from the task id or BDDL stem."""
+    if task_id in TASK_PROMPTS:
+        return TASK_PROMPTS[task_id]
     if fallback_task_name:
         return _stem_to_prompt(fallback_task_name)
     return _stem_to_prompt(task_id)
@@ -327,6 +358,9 @@ def run_episode_with_stages(
             )
             replay.append(processed_main)
             replay_wrist.append(processed_wrist)
+            observe_fn = getattr(adapter, "observe", None)
+            if callable(observe_fn):
+                observe_fn(adapter_obs, prompt, resize_size)
 
             if not action_plan:
                 actions = ensure_action_chunk(adapter.infer_actions(obs=adapter_obs, prompt=prompt, resize_size=resize_size))
@@ -353,14 +387,14 @@ def run_episode_with_stages(
                 logging.info(f"  [t={t}] All stages completed.")
                 all_stages_logged = True
 
-            goal_success = check_goal_success(env, goal_monitor_dict) if goal_monitor_dict else False
+            goal_success = bool(stage_done) and all(stage_done.values())
             if goal_success and goal_reached_t is None:
                 goal_reached_t = t
-                logging.info(f"  [t={t}] Goal reached. Continuing {post_goal_steps} more steps before exit.")
+                logging.info(f"  [t={t}] Required stages completed.")
 
             if done:
                 break
-            if goal_reached_t is not None and (t - goal_reached_t) >= post_goal_steps:
+            if goal_reached_t is not None:
                 break
             t += 1
     except Exception as exc:
@@ -368,7 +402,7 @@ def run_episode_with_stages(
 
     num_done = sum(1 for name, _ in stage_checks if stage_done[name])
     score = 100.0 * num_done / len(stage_checks)
-    goal_success = goal_reached_t is not None
+    goal_success = bool(stage_done) and all(stage_done.values())
     return score, stage_done, goal_success, replay, replay_wrist
 
 
@@ -405,6 +439,9 @@ def run_episode_simple(
             )
             replay.append(processed_main)
             replay_wrist.append(processed_wrist)
+            observe_fn = getattr(adapter, "observe", None)
+            if callable(observe_fn):
+                observe_fn(adapter_obs, prompt, resize_size)
 
             if not action_plan:
                 actions = ensure_action_chunk(adapter.infer_actions(obs=adapter_obs, prompt=prompt, resize_size=resize_size))
@@ -517,14 +554,15 @@ def run_eval(
                     stage_totals[name] += int(stage_done[name])
                 tsr_success = bool(stage_done) and all(stage_done.values())
                 tsr_succ_cnt += int(tsr_success)
-                goal_succ_cnt += int(goal_success)
-                base_name = get_video_basename(task_id, ep, current_seed, goal_success if goal_monitor_dict else score)
+                goal_succ_cnt += score / 100.0
+                base_name = get_video_basename(task_id, ep, current_seed, tsr_success)
                 ep_summary = {
                     "ep": ep,
                     "seed": current_seed,
                     "score_pct": float(score),
                     "tsr_success": bool(tsr_success),
                     "goal_success": bool(goal_success),
+                    "csr_stage_rate": float(score / 100.0),
                     "stage_done": stage_done,
                 }
             else:
@@ -568,7 +606,9 @@ def run_eval(
             if use_stage_check:
                 stages_str = " | ".join(f"{n}={'Y' if ep_summary['stage_done'][n] else 'N'}" for n in ep_summary["stage_done"])
                 logging.info(
-                    f"Episode {ep} (seed={current_seed}): score={ep_summary['score_pct']:.0f}% | {stages_str} | goal={'Y' if goal_success else 'N'}"
+                    f"Episode {ep} (seed={current_seed}): score={ep_summary['score_pct']:.0f}% | "
+                    f"{stages_str} | stage_success={'Y' if tsr_success else 'N'} | "
+                    f"csr_stage_rate={ep_summary['csr_stage_rate']:.3f}"
                 )
             else:
                 logging.info(
@@ -591,8 +631,10 @@ def run_eval(
         logging.info(f"Final result - env done success rate: {env_done_cnt}/{n} ({avg_score:.1f}%)")
     tsr_pct = 100.0 * tsr_succ_cnt / max(1, n)
     logging.info(f"Final result - TSR all-stage success rate: {tsr_succ_cnt}/{n} ({tsr_pct:.1f}%)")
-    goal_pct = 100.0 * goal_succ_cnt / max(1, n) if goal_monitor_dict else 0.0
-    if goal_monitor_dict:
+    goal_pct = 100.0 * goal_succ_cnt / max(1, n) if use_stage_check else (100.0 * goal_succ_cnt / max(1, n) if goal_monitor_dict else 0.0)
+    if use_stage_check:
+        logging.info(f"Final result - CSR stage completion rate: {goal_pct:.1f}%")
+    elif goal_monitor_dict:
         logging.info(f"Final result - BDDL goal success rate: {goal_succ_cnt}/{n} ({goal_pct:.1f}%)")
     logging.info(f"Video output: {video_dir}")
     logging.info("============================================================")

@@ -11,7 +11,7 @@ from scipy.spatial.transform import Rotation as R
 import eval_common as ec
 
 
-# Shared Task2-26 stage/goal checker used by both the adapter benchmark
+# Shared Task1-26 stage/goal checker used by both the adapter benchmark
 # and the VLM/VLA reference path. Keep this in sync with
 # evaluation_benchmark/openpi_minimal_runtime/retry_tasks2_26_stage_from_anygrasp.py.
 
@@ -666,7 +666,45 @@ def _counting_pour_stages(
         StageSpec("03_Pour_Two", _body_pour_stage(obj_name, target_kind, target_name, target_radius, move_thresh, return_thresh)),
     ]
 
+COUNTING_POUR_TASKS = {6, 7, 8, 9, 10, 15, 16, 22}
+
+
+def _counting_pour_target(task_id: int) -> tuple[str, str, str] | None:
+    if task_id in {6, 22}:
+        return "tomato_sauce_1", "body", "cookies_1"
+    if task_id == 7:
+        return "tomato_sauce_1", "site", "frypan_1_default_site"
+    if task_id == 8:
+        return "tomato_sauce_1", "body", "chocolate_pudding_1"
+    if task_id == 9:
+        return "tomato_sauce_1", "body", "butter_1"
+    if task_id == 10:
+        return "wine_bottle_1", "site", "white_yellow_mug_1_default_site"
+    if task_id == 15:
+        return "milk_1", "body", "butter_1"
+    if task_id == 16:
+        return "milk_1", "site", "red_coffee_mug_1_default_site"
+    return None
+
+
+def _is_counting_pour_task(task_id: int | None) -> bool:
+    return task_id in COUNTING_POUR_TASKS
+
+
+def _extra_pour_check(task_id: int) -> Callable[[Any, dict[str, Any], int], bool] | None:
+    target = _counting_pour_target(task_id)
+    if target is None:
+        return None
+    obj_name, target_kind, target_name = target
+    return _body_pour_stage(obj_name, target_kind, target_name)
+
+
 def _task_specs(task_id: int) -> list[StageSpec]:
+    if task_id == 1:
+        return [
+            StageSpec("01_Place_Cookies_Basket", _in_container_body("cookies_1", "basket_1", 0.12, -0.05, 0.20)),
+            StageSpec("02_Place_Tomato_Basket", _in_container_body("tomato_sauce_1", "basket_1", 0.12, -0.05, 0.20)),
+        ]
     if task_id == 2:
         return [
             StageSpec("01_Place_Butter_Basket", _in_container_body("butter_1", "basket_1", 0.12, -0.05, 0.20)),
@@ -770,14 +808,12 @@ def _task_specs(task_id: int) -> list[StageSpec]:
             StageSpec("01_Open_Microwave", _microwave_open(0.30)),
             StageSpec("02_Place_Cookies_Microwave", _in_microwave("cookies_1")),
             StageSpec("03_Place_Chocolate_Microwave", _in_microwave("chocolate_pudding_1")),
-            StageSpec("04_Close_Microwave", _microwave_closed(0.05)),
         ]
     if task_id == 21:
         return [
             StageSpec("01_Open_Microwave", _microwave_open(0.50)),
             StageSpec("02_Place_Butter_Microwave", _in_microwave("butter_1")),
             StageSpec("03_Place_Chocolate_Microwave", _in_microwave("chocolate_pudding_1")),
-            StageSpec("04_Close_Microwave", _microwave_closed(0.05)),
         ]
     if task_id == 22:
         return _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce", "body", "cookies_1")
@@ -786,14 +822,12 @@ def _task_specs(task_id: int) -> list[StageSpec]:
             StageSpec("01_Open_Microwave", _microwave_open(0.50)),
             StageSpec("02_Place_Cream_Microwave", _in_microwave("cream_cheese_1")),
             StageSpec("03_Place_Popcorn_Microwave", _in_microwave("popcorn_1")),
-            StageSpec("04_Close_Microwave", _microwave_closed(0.05)),
         ]
     if task_id == 24:
         return [
             StageSpec("01_Open_Microwave", _microwave_open(0.50)),
             StageSpec("02_Place_Cookies_Microwave", _in_microwave("cookies_1")),
             StageSpec("03_Place_Popcorn_Microwave", _in_microwave("popcorn_1")),
-            StageSpec("04_Close_Microwave", _microwave_closed(0.05)),
         ]
     if task_id == 25:
         return [

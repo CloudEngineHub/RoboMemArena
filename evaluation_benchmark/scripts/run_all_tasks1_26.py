@@ -22,7 +22,7 @@ EPISODES_HEADER = [
     "score_pct",
     "tsr_success",
     "stage_success",
-    "goal",
+    "csr_stage_rate",
     "extra_pour_detected",
     "pour_1_step",
     "pour_2_step",
@@ -57,7 +57,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--task-start", type=int, default=1)
     parser.add_argument("--task-end", type=int, default=26)
     parser.add_argument("--num-trials-per-task", type=int, default=50)
-    parser.add_argument("--max-steps", type=int, default=3000)
+    parser.add_argument("--max-steps", type=int, default=2500)
     parser.add_argument("--post-goal-steps", type=int, default=200)
     parser.add_argument(
         "--fail-on-extra-pour",
@@ -149,7 +149,7 @@ def _write_outputs(out_root: Path, results: list[dict[str, Any]], seed: int) -> 
         writer.writerow(EPISODES_HEADER)
         for result in results:
             for episode in result["episodes"]:
-                goal_success = episode.get("goal_success")
+                csr_stage_rate = episode.get("csr_stage_rate", float(episode["score_pct"]) / 100.0)
                 writer.writerow(
                     [
                         result["task_id"],
@@ -158,7 +158,7 @@ def _write_outputs(out_root: Path, results: list[dict[str, Any]], seed: int) -> 
                         f"{float(episode['score_pct']):.1f}",
                         "Y" if episode.get("tsr_success", False) else "N",
                         "Y" if episode.get("stage_success", episode.get("tsr_success", False)) else "N",
-                        "N/A" if goal_success is None else ("Y" if goal_success else "N"),
+                        f"{float(csr_stage_rate):.4f}",
                         "Y" if episode.get("extra_pour_detected", False) else "N",
                         episode.get("pour_1_step"),
                         episode.get("pour_2_step"),
@@ -192,11 +192,7 @@ def _write_outputs(out_root: Path, results: list[dict[str, Any]], seed: int) -> 
     summary_json.write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     num_tasks = len(results)
-    goal_rates = [
-        float(result["goal_success_rate_pct"])
-        for result in results
-        if result.get("goal_success_rate_pct") is not None
-    ]
+    goal_rates = [float(result["goal_success_rate_pct"]) for result in results]
     aggregate = {
         "num_tasks": num_tasks,
         "num_episodes": sum(len(result["episodes"]) for result in results),
@@ -208,7 +204,7 @@ def _write_outputs(out_root: Path, results: list[dict[str, Any]], seed: int) -> 
             sum(float(result.get("tsr_success_rate_pct", 0.0)) for result in results) / max(1, num_tasks)
         ),
         "macro_goal_success_rate_pct": sum(goal_rates) / max(1, len(goal_rates)),
-        "num_goal_scored_tasks": len(goal_rates),
+        "num_goal_scored_tasks": num_tasks,
     }
     aggregate_json.write_text(json.dumps(aggregate, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 

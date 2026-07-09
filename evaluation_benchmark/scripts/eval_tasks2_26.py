@@ -470,14 +470,12 @@ def _task_specs(task_id: int) -> list[StageSpec]:
             StageSpec("01_Open_Microwave", _microwave_open(0.30)),
             StageSpec("02_Place_Cookies_Microwave", _in_microwave("cookies_1")),
             StageSpec("03_Place_Chocolate_Microwave", _in_microwave("chocolate_pudding_1")),
-            StageSpec("04_Close_Microwave", _microwave_closed(0.05)),
         ]
     if task_id == 21:
         return [
             StageSpec("01_Open_Microwave", _microwave_open(0.50)),
             StageSpec("02_Place_Butter_Microwave", _in_microwave("butter_1")),
             StageSpec("03_Place_Chocolate_Microwave", _in_microwave("chocolate_pudding_1")),
-            StageSpec("04_Close_Microwave", _microwave_closed(0.05)),
         ]
     if task_id == 22:
         return [
@@ -486,21 +484,18 @@ def _task_specs(task_id: int) -> list[StageSpec]:
             StageSpec("03_Place_Tomato_Aside", _near_fixed_position("tomato_sauce_1", np.array([0.0, -0.2, 0.50], dtype=np.float32), 0.20, 0.20)),
             StageSpec("04_Open_Microwave", _microwave_open(0.30)),
             StageSpec("05_Place_Cookies_Microwave", _in_microwave("cookies_1")),
-            StageSpec("06_Close_Microwave", _microwave_closed(0.05)),
         ]
     if task_id == 23:
         return [
             StageSpec("01_Open_Microwave", _microwave_open(0.50)),
             StageSpec("02_Place_Cream_Microwave", _in_microwave("cream_cheese_1")),
             StageSpec("03_Place_Popcorn_Microwave", _in_microwave("popcorn_1")),
-            StageSpec("04_Close_Microwave", _microwave_closed(0.05)),
         ]
     if task_id == 24:
         return [
             StageSpec("01_Open_Microwave", _microwave_open(0.50)),
             StageSpec("02_Place_Cookies_Microwave", _in_microwave("cookies_1")),
             StageSpec("03_Place_Popcorn_Microwave", _in_microwave("popcorn_1")),
-            StageSpec("04_Close_Microwave", _microwave_closed(0.05)),
         ]
     if task_id == 25:
         return [
@@ -575,6 +570,9 @@ def run_episode_with_stateful_stages(
             )
             replay.append(processed_main)
             replay_wrist.append(processed_wrist)
+            observe_fn = getattr(adapter, "observe", None)
+            if callable(observe_fn):
+                observe_fn(adapter_obs, prompt, resize_size)
 
             if not action_plan:
                 actions = ensure_action_chunk(adapter.infer_actions(obs=adapter_obs, prompt=prompt, resize_size=resize_size))
@@ -621,19 +619,10 @@ def run_episode_with_stateful_stages(
                 extra_pour_detected = True
                 logging.info(f"  [t={t}] Third pour detected; episode failed.")
 
-            if _is_drawer_task(task_id):
-                if _stage_success_from_stage_done(task_id, stage_done):
-                    goal_reached_t = t
-                    logging.info(f"  [t={t}] Drawer required stages completed.")
-                    break
-            elif not counting_pour_task:
-                if goal_check_override is not None:
-                    goal_success = goal_check_override(env, stage_done)
-                else:
-                    goal_success = ec.check_goal_success(env, goal_monitor_dict) if goal_monitor_dict else False
-                if goal_success and goal_reached_t is None:
-                    goal_reached_t = t
-                    logging.info(f"  [t={t}] Goal reached. Continuing {post_goal_steps} more steps before exit.")
+            if not counting_pour_task and _stage_success_from_stage_done(task_id, stage_done):
+                goal_reached_t = t
+                logging.info(f"  [t={t}] Required stages completed.")
+                break
 
             all_stages_complete = bool(stage_done) and all(stage_done.values())
             extra_monitor_complete = (
@@ -648,8 +637,6 @@ def run_episode_with_stateful_stages(
             if counting_pour_task:
                 if extra_pour_detected or (all_stages_complete and extra_monitor_complete):
                     break
-            elif goal_reached_t is not None and (t - goal_reached_t) >= post_goal_steps:
-                break
             t += 1
     except Exception as exc:
         logging.exception(f"Episode failed: {exc}")
@@ -663,13 +650,11 @@ def run_episode_with_stateful_stages(
             and t >= extra_monitor_deadline_t
         )
     )
-    if _is_drawer_task(task_id):
-        stage_success = _stage_success_from_stage_done(task_id, stage_done)
-    else:
-        stage_success = all_stages_complete and (
-            not counting_pour_task
-            or (extra_monitor_complete and not extra_pour_detected)
-        )
+    required_stages_complete = _stage_success_from_stage_done(task_id, stage_done)
+    stage_success = required_stages_complete and (
+        not counting_pour_task
+        or (extra_monitor_complete and not extra_pour_detected)
+    )
     if extra_pour_detected:
         failure_reason = "extra_pour"
     elif not stage_success:
@@ -690,10 +675,7 @@ def run_episode_with_stateful_stages(
         ),
         "failure_reason": failure_reason,
     }
-    if _is_drawer_task(task_id):
-        goal_success = _stage_success_from_stage_done(task_id, stage_done)
-    else:
-        goal_success = None if counting_pour_task else goal_reached_t is not None
+    goal_success = stage_success
     return score, stage_done, goal_success, diagnostics, replay, replay_wrist
 
 
@@ -802,10 +784,9 @@ def run_eval_task(
                 stage_totals[name] += int(ok)
             tsr_success = bool(diagnostics["stage_success"])
             tsr_succ_cnt += int(tsr_success)
-            if goal_success is not None:
-                goal_succ_cnt += int(goal_success)
+            goal_succ_cnt += score / 100.0
 
-            base_name = ec.get_video_basename(task_id, ep, current_seed, tsr_success if counting_pour_task else bool(goal_success))
+            base_name = ec.get_video_basename(task_id, ep, current_seed, tsr_success)
             if replay:
                 imageio.mimwrite(video_dir / f"{base_name}.mp4", replay, fps=10)
             if replay_wrist:
@@ -815,7 +796,7 @@ def run_eval_task(
             logging.info(
                 f"Episode {ep} (seed={current_seed}): score={score:.0f}% | {stages_str} | "
                 f"stage_success={'Y' if tsr_success else 'N'} | "
-                f"goal={'N/A' if goal_success is None else ('Y' if goal_success else 'N')} | "
+                f"csr_stage_rate={score / 100.0:.3f} | "
                 f"failure_reason={diagnostics['failure_reason']}"
             )
             episodes.append(
@@ -825,7 +806,8 @@ def run_eval_task(
                     "score_pct": float(score),
                     "tsr_success": bool(tsr_success),
                     "stage_success": bool(tsr_success),
-                    "goal_success": goal_success,
+                    "goal_success": bool(goal_success),
+                    "csr_stage_rate": float(score / 100.0),
                     "stage_done": stage_done,
                     **diagnostics,
                 }
@@ -845,11 +827,8 @@ def run_eval_task(
         logging.info(f"  {name}: {cnt}/{n} ({(cnt / max(1, n)) * 100:.0f}%)")
     tsr_pct = 100.0 * tsr_succ_cnt / max(1, n)
     logging.info(f"Final result - TSR all-stage success rate: {tsr_succ_cnt}/{n} ({tsr_pct:.1f}%)")
-    goal_pct = None if counting_pour_task else 100.0 * goal_succ_cnt / max(1, n)
-    if goal_pct is None:
-        logging.info("Final result - BDDL goal success rate: N/A (stage-only counting-pour task)")
-    else:
-        logging.info(f"Final result - BDDL goal success rate: {goal_succ_cnt}/{n} ({goal_pct:.1f}%)")
+    goal_pct = 100.0 * goal_succ_cnt / max(1, n)
+    logging.info(f"Final result - CSR stage completion rate: {goal_pct:.1f}%")
     logging.info(f"Video output: {video_dir}")
     logging.info("============================================================")
 
@@ -862,7 +841,7 @@ def run_eval_task(
         "average_score_pct": float(avg_score),
         "tsr_success_rate_pct": float(tsr_pct),
         "stage_success_rate_pct": float(tsr_pct),
-        "goal_success_rate_pct": None if goal_pct is None else float(goal_pct),
+        "goal_success_rate_pct": float(goal_pct),
         "episodes": episodes,
     }
 
@@ -876,7 +855,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--replan-steps", type=int, default=10)
     parser.add_argument("--num-steps-wait", type=int, default=10)
     parser.add_argument("--num-trials-per-task", type=int, default=50)
-    parser.add_argument("--max-steps", type=int, default=3000)
+    parser.add_argument("--max-steps", type=int, default=2500)
     parser.add_argument("--post-goal-steps", type=int, default=200)
     parser.add_argument(
         "--fail-on-extra-pour",

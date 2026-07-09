@@ -93,15 +93,15 @@ export VLA_CONFIG=<your_vla_config_name>  # optional; default runner value is pi
 
 ## Metrics
 
-- `CSR`: final BDDL goal success rate for tasks that use a BDDL goal checker.
-- `stage_success_rate`: all-stage success rate. An episode succeeds only when every reference stage is completed.
+- `CSR`: average stage completion rate. In output files this is stored in the legacy-compatible `goal_success_rate` / `goal_success_rate_pct` field.
+- `stage_success_rate`: strict required-stage completion rate. This is the task success rate (TSR): an episode has TSR=1 only when every required reference stage is completed.
 - `average_score_pct`: diagnostic partial stage/process completion score.
 
-Tasks 6, 7, 8, 9, 10, 15, 16, and 22 are counting-pour tasks. They do not call
-the BDDL goal checker and therefore report `goal_success=null` / CSR `N/A`.
-Their `stage_success` additionally requires the default 30-step monitor to
-finish without detecting a third pour. A pour is counted from the manipulated
-object body: at least `0.15 rad` away from its stage baseline followed by a
-return to within `0.10 rad`.
+All tasks use stage-based scoring. Tasks 6, 7, 8, 9, 10, 15, 16, and 22 are
+counting-pour tasks; their `stage_success` additionally requires the default
+30-step monitor to finish without detecting a third pour. A pour is counted
+from the manipulated object body: at least `0.15 rad` away from its stage
+baseline followed by a return to within `0.10 rad`. Microwave tasks do not
+require the final microwave-close stage.
 
 For official reporting, use the same adapter and scoring path consistently across all 1-26 tasks.

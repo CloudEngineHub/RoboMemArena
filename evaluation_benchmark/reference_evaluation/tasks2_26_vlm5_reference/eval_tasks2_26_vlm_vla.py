@@ -26,6 +26,7 @@ REFERENCE_DIR = Path(__file__).resolve().parent
 EVAL_BENCHMARK_DIR = REFERENCE_DIR.parents[1]
 REPO_ROOT = EVAL_BENCHMARK_DIR.parent
 RUNTIME_DIR = EVAL_BENCHMARK_DIR / "openpi_minimal_runtime"
+SCRIPTS_DIR = EVAL_BENCHMARK_DIR / "scripts"
 DEFAULT_OPENPI_ROOT = REPO_ROOT / "third_party" / "openpi_minimal"
 ROOT = Path(os.environ.get("OPENPI_ROOT", str(DEFAULT_OPENPI_ROOT))).resolve()
 _default_inference_root = REPO_ROOT.parent / "openpi_inference"
@@ -48,6 +49,7 @@ if LIBERO_PATH_ENV:
 
 module_paths = [
     str(RUNTIME_DIR),
+    str(SCRIPTS_DIR),
     str(OPENPI_CLIENT_SRC),
     str(OPENPI_SRC),
 ]
@@ -62,7 +64,7 @@ os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 os.environ.setdefault("MUJOCO_GL", "egl")
 
 import eval_common as ec
-import retry_tasks2_26_stage_from_anygrasp as stage_eval
+import task2_26_reference_stage as stage_eval
 from eval_task1_qwen3_async_openpi_inference_vla_cam import (
     Args as BaseArgs,
     StableWebsocketClientPolicy,
@@ -372,50 +374,11 @@ class FullVlm26MemoryPlanner(SyncLoRAPlanner):
         return subtask
 
 
-def _task1_stage_specs() -> list[stage_eval.StageSpec]:
-    return [
-        stage_eval.StageSpec(
-            "01_Place_Cookies_Basket",
-            stage_eval._in_container_body("cookies_1", "basket_1", 0.12, -0.05, 0.20),
-        ),
-        stage_eval.StageSpec(
-            "02_Place_Tomato_Basket",
-            stage_eval._in_container_body("tomato_sauce_1", "basket_1", 0.12, -0.05, 0.20),
-        ),
-    ]
-
-
 def _task_specs(task_id: int) -> list[stage_eval.StageSpec]:
-    if task_id == 1:
-        return _task1_stage_specs()
-    if task_id == 2:
-        return [
-            stage_eval.StageSpec(
-                "01_Place_Cream_Basket",
-                stage_eval._in_container_body("cream_cheese_1", "basket_1", 0.12, -0.05, 0.20),
-            ),
-            stage_eval.StageSpec(
-                "02_Place_Pudding_Basket",
-                stage_eval._in_container_body("chocolate_pudding_1", "basket_1", 0.12, -0.05, 0.20),
-            ),
-        ]
-    if task_id == 3:
-        return [
-            stage_eval.StageSpec(
-                "01_Place_Cream_Basket",
-                stage_eval._in_container_body("cream_cheese_1", "basket_1", 0.12, -0.05, 0.20),
-            ),
-            stage_eval.StageSpec(
-                "02_Place_Pudding_Basket",
-                stage_eval._in_container_body("chocolate_pudding_1", "basket_1", 0.12, -0.05, 0.20),
-            ),
-        ]
     return stage_eval._task_specs(task_id)
 
 
 def _goal_override_check(task_id: int):
-    if task_id == 1:
-        return None
     return stage_eval._goal_override_check(task_id)
 
 
@@ -433,6 +396,7 @@ def run_episode_async_stateful(
     logger: logging.Logger,
     fail_on_extra_pour: bool,
     extra_pour_monitor_steps: int,
+    post_goal_steps: int,
 ) -> tuple[float, dict[str, bool], bool | None, dict[str, Any], list[np.ndarray], list[np.ndarray]]:
     obs = env.reset()
     replay: list[np.ndarray] = []
@@ -453,6 +417,7 @@ def run_episode_async_stateful(
     drawer_task = stage_eval._is_drawer_task(task_id)
     goal_success: bool | None = None if counting_pour_task else False
     ever_goal_success: bool | None = None if counting_pour_task else False
+    goal_reached_t: int | None = None
     extra_pour_check = stage_eval._extra_pour_check(task_id)
     extra_monitor_start_state_idx: int | None = None
     extra_monitor_deadline_t: int | None = None
@@ -612,21 +577,11 @@ def run_episode_async_stateful(
                     logger.info("[t=%s] third pour detected; episode failed", t)
                     raise StopIteration
 
-                if drawer_task:
-                    if stage_eval._stage_success_from_stage_done(task_id, stage_done):
-                        goal_success = True
-                        ever_goal_success = True
-                        logger.info("[t=%s] drawer required stages done", t)
-                        raise StopIteration
-                elif not counting_pour_task:
-                    if goal_check_override is not None:
-                        goal_success = bool(goal_check_override(env, stage_done))
-                    else:
-                        goal_success = ec.check_goal_success(env, goal_monitor_dict) if goal_monitor_dict else False
-                    if goal_success:
-                        if not ever_goal_success:
-                            logger.info("[t=%s] goal success", t)
-                        ever_goal_success = True
+                if not counting_pour_task and stage_eval._stage_success_from_stage_done(task_id, stage_done):
+                    goal_success = True
+                    ever_goal_success = True
+                    logger.info("[t=%s] required stages done", t)
+                    raise StopIteration
 
                 all_stages_complete = bool(stage_done) and all(stage_done.values())
                 extra_monitor_complete = (
@@ -655,14 +610,6 @@ def run_episode_async_stateful(
                 vlm_thread.join(timeout=3.0)
 
     stage_pct = stage_eval._stage_score_pct(task_id, stage_done)
-    if drawer_task:
-        goal_success = stage_eval._stage_success_from_stage_done(task_id, stage_done)
-        ever_goal_success = goal_success
-    elif not counting_pour_task and not ever_goal_success:
-        if goal_check_override is not None:
-            ever_goal_success = bool(goal_check_override(env, stage_done))
-        else:
-            ever_goal_success = ec.check_goal_success(env, goal_monitor_dict) if goal_monitor_dict else False
     all_stages_complete = bool(stage_done) and all(stage_done.values())
     extra_monitor_complete = (
         not fail_on_extra_pour
@@ -671,13 +618,11 @@ def run_episode_async_stateful(
             and t >= extra_monitor_deadline_t
         )
     )
-    if drawer_task:
-        stage_success = stage_eval._stage_success_from_stage_done(task_id, stage_done)
-    else:
-        stage_success = all_stages_complete and (
-            not counting_pour_task
-            or (extra_monitor_complete and not extra_pour_detected)
-        )
+    required_stages_complete = stage_eval._stage_success_from_stage_done(task_id, stage_done)
+    stage_success = required_stages_complete and (
+        not counting_pour_task
+        or (extra_monitor_complete and not extra_pour_detected)
+    )
     if extra_pour_detected:
         failure_reason = "extra_pour"
     elif not stage_success:
@@ -698,6 +643,7 @@ def run_episode_async_stateful(
         ),
         "failure_reason": failure_reason,
     }
+    ever_goal_success = stage_success
     return stage_pct, stage_done, ever_goal_success, diagnostics, replay, replay_wrist
 
 
@@ -738,8 +684,8 @@ def main() -> None:
     args.resize_size = int(os.environ.get("RESIZE_SIZE", "256"))
     args.replan_steps = int(os.environ.get("REPLAN_STEPS", "10"))
     args.num_steps_wait = int(os.environ.get("NUM_STEPS_WAIT", "10"))
-    args.max_steps = int(os.environ.get("MAX_STEPS", "2000"))
-    args.seed = int(os.environ.get("SEED", "104"))
+    args.max_steps = int(os.environ.get("MAX_STEPS", "2500"))
+    args.seed = int(os.environ.get("SEED", "100"))
     args.num_trials_per_task = int(os.environ.get("NUM_TRIALS", "1"))
     args.vlm_input_profile = os.environ.get("VLM_INPUT_PROFILE", "fullvlm_256")
     args.vlm_match_training_jpeg_roundtrip = os.environ.get("VLM_MATCH_TRAINING_JPEG_ROUNDTRIP", "0") in {"1", "true", "yes"}
@@ -754,6 +700,7 @@ def main() -> None:
     args.vlm_use_keyframe_memory = os.environ.get("VLM_USE_KEYFRAME_MEMORY", "1") in {"1", "true", "yes"}
     fail_on_extra_pour = os.environ.get("FAIL_ON_EXTRA_POUR", "1").strip().lower() in {"1", "true", "yes", "y", "on"}
     extra_pour_monitor_steps = int(os.environ.get("POST_STAGE_STEPS", os.environ.get("EXTRA_POUR_MONITOR_STEPS", "30")))
+    post_goal_steps = int(os.environ.get("POST_GOAL_STEPS", "200"))
     _apply_vlm_input_profile(args)
 
     out_root.mkdir(parents=True, exist_ok=True)
@@ -849,16 +796,16 @@ def main() -> None:
                     logger=ep_logger,
                     fail_on_extra_pour=fail_on_extra_pour,
                     extra_pour_monitor_steps=extra_pour_monitor_steps,
+                    post_goal_steps=post_goal_steps,
                 )
                 stage_sum += stage_pct
                 stage_success_cnt += int(diagnostics["stage_success"])
-                if goal_success is not None:
-                    goal_cnt += int(goal_success)
+                goal_cnt += stage_pct / 100.0
                 base_name = ec.get_video_basename(
                     task_id,
                     ep,
                     seed,
-                    diagnostics["stage_success"] if counting_pour_task else bool(goal_success),
+                    diagnostics["stage_success"],
                 )
                 stages_str = " | ".join(f"{k}={'Y' if v else 'N'}" for k, v in stage_done.items())
                 ep_logger.info(
@@ -867,12 +814,12 @@ def main() -> None:
                     seed,
                     stage_pct,
                     int(diagnostics["stage_success"]),
-                    "N/A" if goal_success is None else int(goal_success),
+                    f"{stage_pct / 100.0:.3f}",
                     diagnostics["failure_reason"],
                     stages_str,
                 )
                 with prompt_trace_tsv.open("a", encoding="utf-8") as f:
-                    goal_text = "N/A" if goal_success is None else str(int(goal_success))
+                    goal_text = f"{stage_pct / 100.0:.4f}"
                     f.write(
                         f"{task_id}\t{ep}\t{seed}\t{args.base_model_dir}\t\t"
                         f"{int(diagnostics['stage_success'])}\t{goal_text}\t{stage_pct:.1f}\t"
@@ -897,7 +844,7 @@ def main() -> None:
         n = max(1, args.num_trials_per_task)
         stage_score = stage_sum / n
         stage_success_rate = stage_success_cnt / n
-        goal_success_rate = None if counting_pour_task else goal_cnt / n
+        goal_success_rate = goal_cnt / n
         dur = round(time.time() - st, 2)
         row = {
             "task_id": task_id,
@@ -912,7 +859,7 @@ def main() -> None:
         results.append(row)
         summary_json.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
         with summary_tsv.open("a", encoding="utf-8") as f:
-            goal_text = "N/A" if goal_success_rate is None else f"{goal_success_rate:.4f}"
+            goal_text = f"{goal_success_rate:.4f}"
             f.write(
                 f"{task_id}\t{status}\t{err.replace(chr(9), ' ')}\t{stage_score:.1f}\t"
                 f"{stage_success_rate:.4f}\t{goal_text}\t{task_video}\t{dur}\n"
@@ -928,13 +875,12 @@ def main() -> None:
 
     planner.close()
     completed = [r for r in results if r["status"] == "completed"]
-    goal_scored = [r for r in completed if r["goal_success_rate"] is not None]
     aggregate = {
         "macro_stage_score_pct": sum(r["stage_score_pct"] for r in completed) / max(1, len(completed)),
         "macro_stage_success_rate": sum(r["stage_success_rate"] for r in completed) / max(1, len(completed)),
-        "macro_goal_success_rate": sum(r["goal_success_rate"] for r in goal_scored) / max(1, len(goal_scored)),
+        "macro_goal_success_rate": sum(r["goal_success_rate"] for r in completed) / max(1, len(completed)),
         "num_tasks": len(results),
-        "num_goal_scored_tasks": len(goal_scored),
+        "num_goal_scored_tasks": len(completed),
     }
     (out_root / "aggregate.json").write_text(json.dumps(aggregate, ensure_ascii=False, indent=2), encoding="utf-8")
     logging.info("done aggregate=%s summary=%s", aggregate, summary_tsv)
