@@ -171,14 +171,13 @@ def _write_outputs(out_root: Path, results: list[dict[str, Any]], seed: int) -> 
         writer = csv.writer(summary_f, delimiter="\t")
         writer.writerow(TASK_SUMMARY_HEADER)
         for result in results:
-            csr_rate = result.get("csr_stage_rate_pct", result.get("average_score_pct"))
             writer.writerow(
                 [
                     result["task_id"],
                     len(result["episodes"]),
                     seed,
-                    f"{float(result.get('tsr_success_rate_pct', 0.0)):.1f}",
-                    f"{float(csr_rate):.1f}",
+                    f"{float(result.get('TSR', 0.0)):.1f}",
+                    f"{float(result.get('CSR', 0.0)):.1f}",
                     result["prompt"],
                     result["video_dir"],
                 ]
@@ -188,15 +187,12 @@ def _write_outputs(out_root: Path, results: list[dict[str, Any]], seed: int) -> 
     summary_json.write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     num_tasks = len(results)
-    csr_rates = [float(result.get("csr_stage_rate_pct", result.get("average_score_pct", 0.0))) for result in results]
     aggregate = {
         "num_tasks": num_tasks,
         "num_episodes": sum(len(result["episodes"]) for result in results),
         "seed_start": seed,
-        "macro_TSR": (
-            sum(float(result.get("tsr_success_rate_pct", 0.0)) for result in results) / max(1, num_tasks)
-        ),
-        "macro_CSR": sum(csr_rates) / max(1, len(csr_rates)),
+        "TSR": sum(float(result.get("TSR", 0.0)) for result in results) / max(1, num_tasks),
+        "CSR": sum(float(result.get("CSR", 0.0)) for result in results) / max(1, num_tasks),
     }
     aggregate_json.write_text(json.dumps(aggregate, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 

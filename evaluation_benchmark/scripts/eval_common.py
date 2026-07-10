@@ -645,10 +645,8 @@ def run_eval(
         "prompt": prompt,
         "bddl_path": str(bddl_path),
         "video_dir": str(video_dir),
-        "average_score_pct": float(avg_score),
-        "tsr_success_rate_pct": float(tsr_pct),
-        "csr_stage_rate_pct": float(goal_pct),
-        "goal_success_rate_pct": float(goal_pct),
+        "TSR": float(tsr_pct),
+        "CSR": float(goal_pct),
         "episodes": episodes,
     }
 
