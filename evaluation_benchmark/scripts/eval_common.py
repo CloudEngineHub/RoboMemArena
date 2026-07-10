@@ -390,11 +390,13 @@ def run_episode_with_stages(
             goal_success = bool(stage_done) and all(stage_done.values())
             if goal_success and goal_reached_t is None:
                 goal_reached_t = t
-                logging.info(f"  [t={t}] Required stages completed.")
+                logging.info(
+                    f"  [t={t}] Required stages completed. Continuing {post_goal_steps} more steps before exit."
+                )
 
             if done:
                 break
-            if goal_reached_t is not None:
+            if goal_reached_t is not None and (t - goal_reached_t) >= post_goal_steps:
                 break
             t += 1
     except Exception as exc:
