@@ -841,6 +841,7 @@ def run_eval_task(
         "average_score_pct": float(avg_score),
         "tsr_success_rate_pct": float(tsr_pct),
         "stage_success_rate_pct": float(tsr_pct),
+        "csr_stage_rate_pct": float(goal_pct),
         "goal_success_rate_pct": float(goal_pct),
         "episodes": episodes,
     }

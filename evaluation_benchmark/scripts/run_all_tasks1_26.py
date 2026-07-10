@@ -36,10 +36,8 @@ TASK_SUMMARY_HEADER = [
     "task_id",
     "num_trials",
     "seed_start",
-    "average_score_pct",
-    "tsr_success_rate_pct",
-    "stage_success_rate_pct",
-    "goal_success_rate_pct",
+    "TSR",
+    "CSR",
     "prompt",
     "video_dir",
 ]
@@ -173,16 +171,14 @@ def _write_outputs(out_root: Path, results: list[dict[str, Any]], seed: int) -> 
         writer = csv.writer(summary_f, delimiter="\t")
         writer.writerow(TASK_SUMMARY_HEADER)
         for result in results:
-            goal_rate = result.get("goal_success_rate_pct")
+            csr_rate = result.get("csr_stage_rate_pct", result.get("average_score_pct"))
             writer.writerow(
                 [
                     result["task_id"],
                     len(result["episodes"]),
                     seed,
-                    f"{float(result['average_score_pct']):.1f}",
                     f"{float(result.get('tsr_success_rate_pct', 0.0)):.1f}",
-                    f"{float(result.get('stage_success_rate_pct', result.get('tsr_success_rate_pct', 0.0))):.1f}",
-                    "N/A" if goal_rate is None else f"{float(goal_rate):.1f}",
+                    f"{float(csr_rate):.1f}",
                     result["prompt"],
                     result["video_dir"],
                 ]
@@ -192,19 +188,15 @@ def _write_outputs(out_root: Path, results: list[dict[str, Any]], seed: int) -> 
     summary_json.write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     num_tasks = len(results)
-    goal_rates = [float(result["goal_success_rate_pct"]) for result in results]
+    csr_rates = [float(result.get("csr_stage_rate_pct", result.get("average_score_pct", 0.0))) for result in results]
     aggregate = {
         "num_tasks": num_tasks,
         "num_episodes": sum(len(result["episodes"]) for result in results),
         "seed_start": seed,
-        "macro_average_score_pct": (
-            sum(float(result["average_score_pct"]) for result in results) / max(1, num_tasks)
-        ),
-        "macro_tsr_success_rate_pct": (
+        "macro_TSR": (
             sum(float(result.get("tsr_success_rate_pct", 0.0)) for result in results) / max(1, num_tasks)
         ),
-        "macro_goal_success_rate_pct": sum(goal_rates) / max(1, len(goal_rates)),
-        "num_goal_scored_tasks": num_tasks,
+        "macro_CSR": sum(csr_rates) / max(1, len(csr_rates)),
     }
     aggregate_json.write_text(json.dumps(aggregate, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
