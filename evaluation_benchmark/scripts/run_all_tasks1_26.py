@@ -19,10 +19,8 @@ EPISODES_HEADER = [
     "task_id",
     "ep",
     "seed",
-    "score_pct",
-    "tsr_success",
-    "stage_success",
-    "csr_stage_rate",
+    "TSR",
+    "CSR",
     "extra_pour_detected",
     "pour_1_step",
     "pour_2_step",
@@ -147,16 +145,13 @@ def _write_outputs(out_root: Path, results: list[dict[str, Any]], seed: int) -> 
         writer.writerow(EPISODES_HEADER)
         for result in results:
             for episode in result["episodes"]:
-                csr_stage_rate = episode.get("csr_stage_rate", float(episode["score_pct"]) / 100.0)
                 writer.writerow(
                     [
                         result["task_id"],
                         episode["ep"],
                         episode["seed"],
-                        f"{float(episode['score_pct']):.1f}",
-                        "Y" if episode.get("tsr_success", False) else "N",
-                        "Y" if episode.get("stage_success", episode.get("tsr_success", False)) else "N",
-                        f"{float(csr_stage_rate):.4f}",
+                        f"{float(episode.get('TSR', 0.0)):.1f}",
+                        f"{float(episode.get('CSR', 0.0)):.1f}",
                         "Y" if episode.get("extra_pour_detected", False) else "N",
                         episode.get("pour_1_step"),
                         episode.get("pour_2_step"),

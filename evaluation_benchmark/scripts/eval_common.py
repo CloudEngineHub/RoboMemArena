@@ -559,10 +559,8 @@ def run_eval(
                 ep_summary = {
                     "ep": ep,
                     "seed": current_seed,
-                    "score_pct": float(score),
-                    "tsr_success": bool(tsr_success),
-                    "goal_success": bool(goal_success),
-                    "csr_stage_rate": float(score / 100.0),
+                    "TSR": 100.0 if tsr_success else 0.0,
+                    "CSR": float(score),
                     "stage_done": stage_done,
                 }
             else:
@@ -590,9 +588,8 @@ def run_eval(
                 ep_summary = {
                     "ep": ep,
                     "seed": current_seed,
-                    "score_pct": 100.0 if env_done_success else 0.0,
-                    "tsr_success": bool(tsr_success),
-                    "goal_success": bool(goal_success),
+                    "TSR": 100.0 if tsr_success else 0.0,
+                    "CSR": 100.0 if goal_success else 0.0,
                     "env_done_success": bool(env_done_success),
                 }
 
@@ -606,13 +603,12 @@ def run_eval(
             if use_stage_check:
                 stages_str = " | ".join(f"{n}={'Y' if ep_summary['stage_done'][n] else 'N'}" for n in ep_summary["stage_done"])
                 logging.info(
-                    f"Episode {ep} (seed={current_seed}): score={ep_summary['score_pct']:.0f}% | "
-                    f"{stages_str} | stage_success={'Y' if tsr_success else 'N'} | "
-                    f"csr_stage_rate={ep_summary['csr_stage_rate']:.3f}"
+                    f"Episode {ep} (seed={current_seed}): TSR={ep_summary['TSR']:.0f}% | "
+                    f"CSR={ep_summary['CSR']:.0f}% | {stages_str}"
                 )
             else:
                 logging.info(
-                    f"Episode {ep} (seed={current_seed}): env_done={'Y' if ep_summary['env_done_success'] else 'N'} | goal={'Y' if goal_success else 'N'}"
+                    f"Episode {ep} (seed={current_seed}): TSR={ep_summary['TSR']:.0f}% | CSR={ep_summary['CSR']:.0f}%"
                 )
     finally:
         env.close()

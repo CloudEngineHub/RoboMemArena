@@ -794,22 +794,19 @@ def run_eval_task(
 
             stages_str = " | ".join(f"{n}={'Y' if stage_done[n] else 'N'}" for n in stage_done)
             logging.info(
-                f"Episode {ep} (seed={current_seed}): score={score:.0f}% | {stages_str} | "
-                f"stage_success={'Y' if tsr_success else 'N'} | "
-                f"csr_stage_rate={score / 100.0:.3f} | "
+                f"Episode {ep} (seed={current_seed}): TSR={100.0 if tsr_success else 0.0:.0f}% | "
+                f"CSR={score:.0f}% | {stages_str} | "
                 f"failure_reason={diagnostics['failure_reason']}"
             )
+            episode_diagnostics = {k: v for k, v in diagnostics.items() if k != "stage_success"}
             episodes.append(
                 {
                     "ep": ep,
                     "seed": current_seed,
-                    "score_pct": float(score),
-                    "tsr_success": bool(tsr_success),
-                    "stage_success": bool(tsr_success),
-                    "goal_success": bool(goal_success),
-                    "csr_stage_rate": float(score / 100.0),
+                    "TSR": 100.0 if tsr_success else 0.0,
+                    "CSR": float(score),
                     "stage_done": stage_done,
-                    **diagnostics,
+                    **episode_diagnostics,
                 }
             )
     finally:
