@@ -68,8 +68,8 @@ cd evaluation_benchmark
 python scripts/run_all_tasks1_26.py \
   --adapter-spec /abs/path/to/your_adapter.py:build_adapter \
   --adapter-kwargs '{"checkpoint_dir": "/abs/path/to/ckpt"}' \
-  --num-trials-per-task 50 \
-  --seed 100 \
+  --num-trials-per-task 51 \
+  --seed 50 \
   --out-root outputs/tasks1_26_eval
 ```
 
