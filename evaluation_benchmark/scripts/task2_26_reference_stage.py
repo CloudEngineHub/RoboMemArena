@@ -9,6 +9,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 
 import eval_common as ec
+from shared_pour_counter import PourCounterConfig, SharedPourCounter
 
 
 # Shared Task1-26 stage/goal checker used by both the adapter benchmark
@@ -253,6 +254,7 @@ def _build_initial_state(env: Any) -> dict[str, Any]:
     return {
         "step_idx": 0,
         "tilt_angles": [],
+        "shared_pour_counters": {},
         "initial_body_pos": initial_body_pos,
         "initial_site_pos": initial_site_pos,
         "initial_joint_qpos": initial_joint_qpos,
@@ -651,19 +653,51 @@ def _tomato_body_pour_stage(
 ) -> Callable[[Any, dict[str, Any], int], bool]:
     return _body_pour_stage("tomato_sauce_1", target_kind, target_name, target_radius, move_thresh, return_thresh, min_steps, warmup)
 
+
+def _counted_pour_stage(
+    obj_name: str,
+    target_kind: str,
+    target_name: str,
+    target_radius: float,
+    required_count: int,
+) -> Callable[[Any, dict[str, Any], int], bool]:
+    """Return a stage predicate backed by one persistent physical event counter."""
+
+    counter_key = (obj_name, target_kind, target_name)
+
+    def check(env: Any, state: dict[str, Any], stage_start: int) -> bool:
+        del stage_start
+        counters = state.setdefault("shared_pour_counters", {})
+        counter = counters.get(counter_key)
+        if counter is None:
+            initial_source_pos = _initial_body_pos(state, obj_name)
+            if initial_source_pos is None:
+                return False
+            counter = SharedPourCounter(
+                source_name=obj_name,
+                target_kind=target_kind,
+                target_name=target_name,
+                initial_source_pos=np.asarray(initial_source_pos, dtype=np.float64).copy(),
+                config=PourCounterConfig(target_radius=target_radius),
+            )
+            counters[counter_key] = counter
+        step_idx = int(state.get("step_idx", 0))
+        return counter.update(env, step_idx) >= required_count
+
+    return check
+
+
 def _counting_pour_stages(
     obj_name: str,
     label: str,
     target_kind: str,
     target_name: str,
     target_radius: float = 0.20,
-    move_thresh: float = 0.15,
-    return_thresh: float = 0.10,
 ) -> list[StageSpec]:
     return [
         StageSpec(f"01_Lift_{label}", _lift_rel(obj_name, 0.03)),
-        StageSpec("02_Pour_One", _body_pour_stage(obj_name, target_kind, target_name, target_radius, move_thresh, return_thresh)),
-        StageSpec("03_Pour_Two", _body_pour_stage(obj_name, target_kind, target_name, target_radius, move_thresh, return_thresh)),
+        StageSpec("02_Pour_One", _counted_pour_stage(obj_name, target_kind, target_name, target_radius, 1)),
+        StageSpec("03_Pour_Two", _counted_pour_stage(obj_name, target_kind, target_name, target_radius, 2)),
     ]
 
 COUNTING_POUR_TASKS = {6, 7, 8, 9, 10, 15, 16, 22}
@@ -696,7 +730,7 @@ def _extra_pour_check(task_id: int) -> Callable[[Any, dict[str, Any], int], bool
     if target is None:
         return None
     obj_name, target_kind, target_name = target
-    return _body_pour_stage(obj_name, target_kind, target_name)
+    return _counted_pour_stage(obj_name, target_kind, target_name, 0.20, 3)
 
 
 def _task_specs(task_id: int) -> list[StageSpec]:
