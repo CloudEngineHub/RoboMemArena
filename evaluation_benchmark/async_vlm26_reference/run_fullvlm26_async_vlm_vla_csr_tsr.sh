@@ -9,8 +9,11 @@ DEFAULT_OPENPI_ROOT="${REPO_ROOT}/third_party/openpi_minimal"
 OPENPI_ROOT=${OPENPI_ROOT:-${DEFAULT_OPENPI_ROOT}}
 : "${OPENPI_INFERENCE_ROOT:?Set OPENPI_INFERENCE_ROOT to the openpi_inference checkout.}"
 : "${TARGET_LIBERO_PATH:?Set TARGET_LIBERO_PATH to the LIBERO/libero package path.}"
-: "${VLM_CKPT:?Set VLM_CKPT to the trained VLM checkpoint directory.}"
-: "${VLA_CKPT:?Set VLA_CKPT to the OpenPI VLA checkpoint directory.}"
+
+PREDIMEM_HF_REVISION=e645741c2f34f27e1596bfa89e856d6f3560ed90
+PREDIMEM_HF_SNAPSHOT=${PREDIMEM_HF_SNAPSHOT:-"${HF_HOME:-${HOME}/.cache/huggingface}/hub/models--huashuolei--PrediMem/snapshots/${PREDIMEM_HF_REVISION}"}
+VLA_CKPT="${PREDIMEM_HF_SNAPSHOT}/vla_alltask"
+NORM_STATS_PATH="${VLA_CKPT}/assets/policy_assets/norm_stats.json"
 
 VLA_CONFIG=${VLA_CONFIG:-pi05_robomemarena}
 SERVER_PY=${SERVER_PY:-${OPENPI_ROOT}/.venv/bin/python3}
@@ -42,7 +45,6 @@ export PYTHONPATH="${TARGET_LIBERO_PATH}:${RUNTIME_DIR}:${OPENPI_ROOT}/packages/
 export OUT_ROOT VIDEO_DIR SUMMARY_JSON SUMMARY_TSV PROMPT_TRACE_TSV TASK_CONFIG
 export HOST=${HOST:-127.0.0.1}
 export PORT
-export VLM_CKPT
 export VLM_LORA_PATH=${VLM_LORA_PATH:-none}
 export VLM_DEVICE=${VLM_DEVICE:-cuda:0}
 export TASKS_JSON=${TASKS_JSON:-"[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26]"}
@@ -69,11 +71,58 @@ export VLM_MATCH_TRAINING_JPEG_ROUNDTRIP=${VLM_MATCH_TRAINING_JPEG_ROUNDTRIP:-0}
 SERVER_CUDA_VISIBLE_DEVICES=${SERVER_CUDA_VISIBLE_DEVICES:-0}
 EVAL_CUDA_VISIBLE_DEVICES=${EVAL_CUDA_VISIBLE_DEVICES:-1}
 
+if [ -z "${PREDIMEM_ASSET_GROUP:-}" ]; then
+  mapfile -t TASK_GROUPS < <(python3 - "${TASKS_JSON}" <<'PY'
+import json
+import sys
+
+tasks = json.loads(sys.argv[1])
+if not isinstance(tasks, list) or any(not isinstance(task, int) or task < 1 or task > 26 for task in tasks):
+    raise SystemExit("TASKS_JSON must be a JSON array of task IDs in 1..26")
+task1 = [task for task in tasks if task == 1]
+if task1:
+    print("task1\t" + json.dumps(task1, separators=(",", ":")))
+remaining = [task for task in tasks if task != 1]
+if remaining:
+    print("tasks2to26\t" + json.dumps(remaining, separators=(",", ":")))
+PY
+)
+  if [ "${#TASK_GROUPS[@]}" -eq 0 ]; then
+    echo "[ERROR] TASKS_JSON must contain at least one task ID" >&2
+    exit 2
+  fi
+  if [ "${#TASK_GROUPS[@]}" -gt 1 ]; then
+    for group in "${TASK_GROUPS[@]}"; do
+      IFS=$'\t' read -r family group_tasks <<< "${group}"
+      PREDIMEM_ASSET_GROUP="${family}" TASKS_JSON="${group_tasks}" OUT_ROOT="${OUT_ROOT}/${family}" bash "${BASH_SOURCE[0]}"
+    done
+    exit 0
+  fi
+  IFS=$'\t' read -r PREDIMEM_ASSET_GROUP _ <<< "${TASK_GROUPS[0]}"
+fi
+
+case "${PREDIMEM_ASSET_GROUP}" in
+  task1)
+    VLM_CKPT="${PREDIMEM_HF_SNAPSHOT}/vlm_task1"
+    ;;
+  tasks2to26)
+    VLM_CKPT="${PREDIMEM_HF_SNAPSHOT}/vlm_tasks1to26_ckpt74500"
+    ;;
+  *)
+    echo "[ERROR] invalid PREDIMEM_ASSET_GROUP=${PREDIMEM_ASSET_GROUP}" >&2
+    exit 2
+    ;;
+esac
+VLM_PROCESSOR_DIR="${VLM_CKPT}"
+export VLA_CKPT VLM_CKPT VLM_PROCESSOR_DIR NORM_STATS_PATH PREDIMEM_HF_REVISION PREDIMEM_HF_SNAPSHOT
+
 echo "[INFO] OUT_ROOT=${OUT_ROOT}" | tee -a "${EVAL_LOG}"
 echo "[INFO] TASK_CONFIG=${TASK_CONFIG}" | tee -a "${EVAL_LOG}"
 echo "[INFO] VLM_CKPT=${VLM_CKPT}" | tee -a "${EVAL_LOG}"
 echo "[INFO] VLA_CONFIG=${VLA_CONFIG}" | tee -a "${EVAL_LOG}"
 echo "[INFO] VLA_CKPT=${VLA_CKPT}" | tee -a "${EVAL_LOG}"
+echo "[INFO] NORM_STATS_PATH=${NORM_STATS_PATH}" | tee -a "${EVAL_LOG}"
+echo "[INFO] PrediMem revision=${PREDIMEM_HF_REVISION}" | tee -a "${EVAL_LOG}"
 echo "[INFO] TASKS_JSON=${TASKS_JSON}" | tee -a "${EVAL_LOG}"
 
 if [ ! -d "${VLM_CKPT}" ]; then
@@ -81,7 +130,20 @@ if [ ! -d "${VLM_CKPT}" ]; then
   exit 1
 fi
 if [ ! -d "${VLA_CKPT}" ]; then
-  echo "[ERROR] VLA_CKPT not found: ${VLA_CKPT}" | tee -a "${EVAL_LOG}"
+  echo "[ERROR] missing PrediMem HF snapshot: ${PREDIMEM_HF_SNAPSHOT}" | tee -a "${EVAL_LOG}"
+  echo "[ERROR] download huashuolei/PrediMem revision ${PREDIMEM_HF_REVISION} to the Hugging Face cache first" | tee -a "${EVAL_LOG}"
+  exit 1
+fi
+if [ ! -f "${VLA_CKPT}/params/_METADATA" ] || [ ! -f "${NORM_STATS_PATH}" ]; then
+  echo "[ERROR] incomplete published VLA assets under ${VLA_CKPT}" | tee -a "${EVAL_LOG}"
+  exit 1
+fi
+if [ "$(sha256sum "${NORM_STATS_PATH}" | cut -d' ' -f1)" != "0c0d329a3345d2ea2e1348dac0edf4ae175085fac200cca1cab967aae1ae1767" ]; then
+  echo "[ERROR] published VLA norm hash mismatch: ${NORM_STATS_PATH}" | tee -a "${EVAL_LOG}"
+  exit 1
+fi
+if [ ! -f "${VLM_CKPT}/model.safetensors" ]; then
+  echo "[ERROR] incomplete published VLM assets under ${VLM_CKPT}" | tee -a "${EVAL_LOG}"
   exit 1
 fi
 if [ ! -f "${OPENPI_ROOT}/scripts/serve_policy.py" ]; then
