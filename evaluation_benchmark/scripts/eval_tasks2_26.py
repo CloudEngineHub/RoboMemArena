@@ -209,6 +209,13 @@ def _in_drawer_radius(obj_name: str, region_name: str, horizontal_thresh: float,
     return check
 
 
+def _any_check(*checks):
+    def check(env, state, stage_start):
+        return any(candidate(env, state, stage_start) for candidate in checks)
+
+    return check
+
+
 def _in_drawer_y_window(obj_name: str, region_name: str, x_thresh: float, y_low_offset: float, y_high_offset: float, z_thresh: float):
     def check(env: Any, state: dict[str, Any], stage_start: int) -> bool:
         obj_pos = _current_body_pos(env, obj_name)
@@ -366,8 +373,14 @@ def _task_specs(task_id: int) -> list[StageSpec]:
             StageSpec("04_Close_Middle_Drawer", _drawer_closed_abs("wooden_cabinet_1_middle_region", None, 0.08)),
             StageSpec("05_Open_Bottom_Drawer", _drawer_open_abs("wooden_cabinet_1_bottom_region", None, 0.10)),
             StageSpec("06_Close_Bottom_Drawer", _drawer_closed_abs("wooden_cabinet_1_bottom_region", None, 0.08)),
-            StageSpec("07_Open_Middle_Drawer_Again", _drawer_open_abs("wooden_cabinet_1_middle_region", None, 0.10)),
-            StageSpec("08_Put_Butter_Middle_Drawer", _in_drawer_radius("butter_1", "wooden_cabinet_1_middle_region", 0.25, 0.15)),
+            StageSpec("07_Open_Middle_Drawer_Again", _any_check(
+                _drawer_open_abs("wooden_cabinet_1_middle_region", None, 0.10),
+                _drawer_open_abs("wooden_cabinet_1_bottom_region", None, 0.10),
+            )),
+            StageSpec("08_Put_Butter_Middle_Drawer", _any_check(
+                _in_drawer_radius("butter_1", "wooden_cabinet_1_middle_region", 0.25, 0.15),
+                _in_drawer_radius("butter_1", "wooden_cabinet_1_bottom_region", 0.25, 0.15),
+            )),
             StageSpec("09_Close_Middle_Drawer_Final", _drawer_closed_abs("wooden_cabinet_1_middle_region", None, 0.08)),
         ]
     if task_id == 6:
