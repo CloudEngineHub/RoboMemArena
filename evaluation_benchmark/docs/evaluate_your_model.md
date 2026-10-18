@@ -45,7 +45,7 @@ cd evaluation_benchmark
 python scripts/run_all_tasks1_26.py \
   --adapter-spec /abs/path/to/your_adapter.py:build_adapter \
   --adapter-kwargs '{"checkpoint_dir": "/abs/path/to/your_checkpoint"}' \
-  --num-trials-per-task 51 \
+  --num-trials-per-task 50 \
   --seed 50 \
   --out-root outputs/your_model_eval_1_26
 ```
