@@ -752,11 +752,13 @@ def _counting_pour_stages(
     target_radius: float = 0.20,
     move_thresh: float = 0.15,
     return_thresh: float = 0.10,
+    *,
+    start_index: int = 1,
 ) -> list[StageSpec]:
     return [
-        StageSpec(f"01_Lift_{label}", _lift_rel(obj_name, 0.03)),
-        StageSpec("02_Pour_One", _body_pour_stage(obj_name, target_kind, target_name, target_radius, move_thresh, return_thresh)),
-        StageSpec("03_Pour_Two", _body_pour_stage(obj_name, target_kind, target_name, target_radius, move_thresh, return_thresh)),
+        StageSpec(f"{start_index:02d}_Lift_{label}", _lift_rel(obj_name, 0.03)),
+        StageSpec(f"{start_index + 1:02d}_Pour_One", _body_pour_stage(obj_name, target_kind, target_name, target_radius, move_thresh, return_thresh)),
+        StageSpec(f"{start_index + 2:02d}_Pour_Two", _body_pour_stage(obj_name, target_kind, target_name, target_radius, move_thresh, return_thresh)),
     ]
 
 
@@ -800,9 +802,15 @@ def _task_specs(task_id: int) -> list[StageSpec]:
     if task_id == 7:
         return _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce", "site", "frypan_1_default_site")
     if task_id == 8:
-        return _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce", "body", "chocolate_pudding_1")
+        return [
+            StageSpec("01_Place_Pudding_Frypan", _in_container_body("chocolate_pudding_1", "frypan_1", 0.10, -0.05, 0.15)),
+            *_counting_pour_stages("tomato_sauce_1", "Tomato_Sauce", "body", "chocolate_pudding_1", start_index=2),
+        ]
     if task_id == 9:
-        return _counting_pour_stages("tomato_sauce_1", "Tomato_Sauce", "body", "butter_1")
+        return [
+            StageSpec("01_Place_Butter_Frypan", _in_container_body("butter_1", "frypan_1", 0.10, -0.05, 0.15)),
+            *_counting_pour_stages("tomato_sauce_1", "Tomato_Sauce", "body", "butter_1", start_index=2),
+        ]
     if task_id == 10:
         return _counting_pour_stages("wine_bottle_1", "Wine_Bottle", "site", "white_yellow_mug_1_default_site")
     if task_id == 11:
@@ -838,7 +846,10 @@ def _task_specs(task_id: int) -> list[StageSpec]:
             StageSpec("06_Close_Middle_Drawer", _drawer_closed_abs("wooden_cabinet_1_middle_region", None, 0.08)),
         ]
     if task_id == 15:
-        return _counting_pour_stages("milk_1", "Milk", "body", "butter_1")
+        return [
+            StageSpec("01_Place_Butter_Frypan", _in_container_body("butter_1", "frypan_1", 0.12, -0.05, 0.15)),
+            *_counting_pour_stages("milk_1", "Milk", "body", "butter_1", start_index=2),
+        ]
     if task_id == 16:
         return _counting_pour_stages("milk_1", "Milk", "site", "red_coffee_mug_1_default_site")
     if task_id == 17:

@@ -49,6 +49,7 @@ STAGE_NODES = {
     "_stage_success_from_stage_done", "_stage_score_pct", "_is_counting_pour_task",
     "_counting_pour_stages", "_task_specs", "_goal_override_check",
     "_near_fixed_position", "_microwave_open", "_microwave_closed", "_in_microwave",
+    "_in_container_body",
 }
 
 
@@ -85,6 +86,7 @@ def stage_namespace(path):
     for name in (
         "_lift_rel", "_counted_pour_stage", "_body_pour_stage", "_near_fixed_position",
         "_microwave_open", "_microwave_closed", "_in_microwave",
+        "_in_container_body",
     ):
         namespace[name] = Mock(return_value=lambda env, state, start: False)
     return namespace
@@ -107,10 +109,10 @@ class RolloutEnv:
         return {}, 0.0, False, {}
 
 
-def run_loop(key, completion_steps, *, max_steps=20, monitor_steps=2, third_pour_at=None):
+def run_loop(key, completion_steps, *, task_id=22, max_steps=20, monitor_steps=2, third_pour_at=None):
     env = RolloutEnv(completion_steps, third_pour_at)
     stages = stage_namespace(STAGE_FILES[0])
-    specs = stages["_task_specs"](22)
+    specs = stages["_task_specs"](task_id)
     for spec in specs:
         spec.check_fn = lambda env, state, start, name=spec.name: (
             name in env.completion_steps and env.steps >= env.completion_steps[name]
@@ -146,7 +148,7 @@ def run_loop(key, completion_steps, *, max_steps=20, monitor_steps=2, third_pour
     actions = np.zeros((1, 7), dtype=np.float32)
     adapter = NS(infer_actions=lambda **kw: actions, infer=lambda element: {"actions": actions})
     common = dict(
-        task_id=22, env=env, stage_specs=specs, goal_monitor_dict={},
+        task_id=task_id, env=env, stage_specs=specs, goal_monitor_dict={},
         goal_check_override=None, fail_on_extra_pour=True,
         extra_pour_monitor_steps=monitor_steps, post_goal_steps=0,
     )
