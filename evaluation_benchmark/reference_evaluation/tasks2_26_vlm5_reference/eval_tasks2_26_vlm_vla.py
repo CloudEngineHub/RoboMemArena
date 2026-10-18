@@ -570,7 +570,8 @@ def run_episode_async_stateful(
                     and extra_monitor_start_state_idx is not None
                     and extra_monitor_deadline_t is not None
                     and pour_2_step is not None
-                    and pour_2_step < t <= extra_monitor_deadline_t
+                    and pour_2_step < t
+                    and (task_id == 22 or t <= extra_monitor_deadline_t)
                     and extra_pour_check(env, state, extra_monitor_start_state_idx)
                 ):
                     extra_pour_detected = True
@@ -583,7 +584,7 @@ def run_episode_async_stateful(
                     logger.info("[t=%s] required stages done", t)
                     raise StopIteration
 
-                all_stages_complete = bool(stage_done) and all(stage_done.values())
+                all_stages_complete = stage_eval._stage_success_from_stage_done(task_id, stage_done)
                 extra_monitor_complete = (
                     not fail_on_extra_pour
                     or (
@@ -625,7 +626,7 @@ def run_episode_async_stateful(
     )
     if extra_pour_detected:
         failure_reason = "extra_pour"
-    elif not stage_success:
+    elif not required_stages_complete:
         failure_reason = "incomplete_stage"
     elif counting_pour_task and not extra_monitor_complete:
         failure_reason = "monitor_incomplete"

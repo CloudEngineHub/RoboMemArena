@@ -564,6 +564,7 @@ def run_episode_with_stateful_stages(
     extra_pour_detected = False
     pour_1_step: int | None = None
     pour_2_step: int | None = None
+    last_observed_t = -1
 
     try:
         while t < max_steps + num_steps_wait:
@@ -594,6 +595,7 @@ def run_episode_with_stateful_stages(
             action = action_plan.popleft()
             obs, _, done, _ = env.step(action.tolist())
             _update_state(obs, state)
+            last_observed_t = t
 
             if stage_idx < len(stage_specs):
                 spec = stage_specs[stage_idx]
@@ -626,7 +628,8 @@ def run_episode_with_stateful_stages(
                 and extra_monitor_start_state_idx is not None
                 and extra_monitor_deadline_t is not None
                 and pour_2_step is not None
-                and pour_2_step < t <= extra_monitor_deadline_t
+                and pour_2_step < t
+                and (task_id == 22 or t <= extra_monitor_deadline_t)
                 and extra_pour_check(env, state, extra_monitor_start_state_idx)
             ):
                 extra_pour_detected = True
@@ -642,7 +645,7 @@ def run_episode_with_stateful_stages(
                     f"  [t={t}] Required stages completed. Continuing {post_goal_steps} more steps before exit."
                 )
 
-            all_stages_complete = bool(stage_done) and all(stage_done.values())
+            all_stages_complete = _stage_success_from_stage_done(task_id, stage_done)
             extra_monitor_complete = (
                 not fail_on_extra_pour
                 or (
@@ -667,7 +670,7 @@ def run_episode_with_stateful_stages(
         not fail_on_extra_pour
         or (
             extra_monitor_deadline_t is not None
-            and t >= extra_monitor_deadline_t
+            and last_observed_t >= extra_monitor_deadline_t
         )
     )
     required_stages_complete = _stage_success_from_stage_done(task_id, stage_done)
@@ -677,7 +680,7 @@ def run_episode_with_stateful_stages(
     )
     if extra_pour_detected:
         failure_reason = "extra_pour"
-    elif not stage_success:
+    elif not required_stages_complete:
         failure_reason = "incomplete_stage"
     elif counting_pour_task and not extra_monitor_complete:
         failure_reason = "monitor_incomplete"
@@ -690,7 +693,7 @@ def run_episode_with_stateful_stages(
         "pour_2_step": pour_2_step,
         "extra_monitor_end_step": (
             extra_monitor_deadline_t
-            if extra_monitor_deadline_t is not None and t >= extra_monitor_deadline_t
+            if extra_monitor_deadline_t is not None and last_observed_t >= extra_monitor_deadline_t
             else None
         ),
         "failure_reason": failure_reason,

@@ -79,7 +79,6 @@
 
   (:goal
     (And 
-        (In tomato_sauce_1 microwave_1_heating_region) 
         (In cookies_1 microwave_1_heating_region) 
     )
   )
