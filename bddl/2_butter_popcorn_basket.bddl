@@ -35,6 +35,17 @@
             )
           )
       )
+      (basket_2_init_region
+          (:target coffee_table)
+          (:ranges (
+              (0.16 0.18 0.20 0.22)
+            )
+          )
+          (:yaw_rotation (
+              (3.141592653589793 3.141592653589793)
+            )
+          )
+      )
       (table_region
           (:target coffee_table)
           (:ranges (
@@ -56,7 +67,7 @@
   )
 
   (:objects
-    basket_1 - basket
+    basket_1 basket_2 - basket
     butter_1 - butter
     popcorn_1 - popcorn
   )
@@ -71,11 +82,12 @@
     (On basket_1 coffee_table_basket_init_region)
     (On butter_1 coffee_table_butter_init_region)
     (On popcorn_1 coffee_table_popcorn_init_region)
+    (On basket_2 coffee_table_basket_2_init_region)
   )
 
   (:goal
-    (And
-        (In butter_1 basket_1_contain_region)
+    (And 
+        (In butter_1 basket_1_contain_region) 
         (In popcorn_1 basket_1_contain_region)
     )
   )

@@ -35,6 +35,17 @@
             )
           )
       )
+      (basket_2_init_region
+          (:target coffee_table)
+          (:ranges (
+              (0.16 0.53 0.20 0.5700000000000001)
+            )
+          )
+          (:yaw_rotation (
+              (3.141592653589793 3.141592653589793)
+            )
+          )
+      )
       (table_region
           (:target coffee_table)
           (:ranges (
@@ -56,7 +67,7 @@
   )
 
   (:objects
-    basket_1 - basket
+    basket_1 basket_2 - basket
     cookies_1 - cookies
     tomato_sauce_1 - tomato_sauce
   )
@@ -71,6 +82,7 @@
     (On basket_1 coffee_table_basket_init_region)
     (On cookies_1 coffee_table_cookies_init_region)
     (On tomato_sauce_1 coffee_table_tomato_sauce_init_region)
+    (On basket_2 coffee_table_basket_2_init_region)
   )
 
   (:goal
