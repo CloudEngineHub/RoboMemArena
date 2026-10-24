@@ -327,6 +327,25 @@ def _in_container_body(
 
     return check
 
+
+def _task1_same_basket() -> Callable[[Any, dict[str, Any], int], bool]:
+    basket_checks = [
+        (
+            _in_container_body("cookies_1", basket, 0.12, -0.05, 0.20),
+            _in_container_body("tomato_sauce_1", basket, 0.12, -0.05, 0.20),
+        )
+        for basket in ("basket_1", "basket_2")
+    ]
+
+    def check(env: Any, state: dict[str, Any], stage_start: int) -> bool:
+        return any(
+            cookies(env, state, stage_start) and tomato(env, state, stage_start)
+            for cookies, tomato in basket_checks
+        )
+
+    return check
+
+
 def _in_container_site(
     obj_name: str,
     site_name: str,
@@ -746,8 +765,11 @@ def _extra_pour_check(task_id: int) -> Callable[[Any, dict[str, Any], int], bool
 def _task_specs(task_id: int) -> list[StageSpec]:
     if task_id == 1:
         return [
-            StageSpec("01_Place_Cookies_Basket", _in_container_body("cookies_1", "basket_1", 0.12, -0.05, 0.20)),
-            StageSpec("02_Place_Tomato_Basket", _in_container_body("tomato_sauce_1", "basket_1", 0.12, -0.05, 0.20)),
+            StageSpec("01_Place_Cookies_Basket", _any_check(
+                _in_container_body("cookies_1", "basket_1", 0.12, -0.05, 0.20),
+                _in_container_body("cookies_1", "basket_2", 0.12, -0.05, 0.20),
+            )),
+            StageSpec("02_Place_Tomato_Basket", _task1_same_basket()),
         ]
     if task_id == 2:
         return [
@@ -909,7 +931,7 @@ def _task_specs(task_id: int) -> list[StageSpec]:
     raise ValueError(f"Unsupported task_id={task_id}")
 
 def _goal_override_check(task_id: int) -> Callable[[Any, dict[str, bool]], bool] | None:
-    if task_id == 22:
+    if task_id in {1, 22}:
         return lambda env, stage_done: _stage_success_from_stage_done(task_id, stage_done)
     if task_id in {6, 7, 8, 9, 10, 15, 16, 18, 19}:
         # These tasks treat completing all ordered stages as goal success.

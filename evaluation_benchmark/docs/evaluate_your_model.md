@@ -104,4 +104,12 @@ from the manipulated object body: at least `0.15 rad` away from its stage
 baseline followed by a return to within `0.10 rad`. Microwave tasks do not
 require the final microwave-close stage.
 
+Task 1 accepts either `basket_1` or `basket_2`: the first stage checks that the
+cookies are in either basket, and the second checks that both cookies and tomato
+sauce are in the same basket. Placing them in different baskets fails the second
+stage. The existing placement distance and height thresholds are unchanged.
+This stage rule also determines Task 1 goal success, overriding the scene BDDL's
+fixed `basket_1` goal. Results from older fixed-basket scorer versions must be
+reported separately.
+
 For official reporting, use the same adapter and scoring path consistently across all 1-26 tasks.
