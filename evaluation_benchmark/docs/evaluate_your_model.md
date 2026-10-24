@@ -104,12 +104,16 @@ from the manipulated object body: at least `0.15 rad` away from its stage
 baseline followed by a return to within `0.10 rad`. Microwave tasks do not
 require the final microwave-close stage.
 
-Task 1 accepts either `basket_1` or `basket_2`: the first stage checks that the
-cookies are in either basket, and the second checks that both cookies and tomato
-sauce are in the same basket. Placing them in different baskets fails the second
-stage. The existing placement distance and height thresholds are unchanged.
-This stage rule also determines Task 1 goal success, overriding the scene BDDL's
-fixed `basket_1` goal. Results from older fixed-basket scorer versions must be
-reported separately.
+Tasks 1, 2, and 3 accept either `basket_1` or `basket_2`. Their object pairs are
+cookies and tomato sauce (Task 1), butter and popcorn (Task 2), and cream cheese
+and chocolate pudding (Task 3). The first stage checks that the first object is
+in either basket; the second checks that both objects are currently in the same
+basket. Placing them in different baskets, or removing the first object before
+placing the second, fails the second stage. The existing placement distance and
+height thresholds and stage names are unchanged.
+These stage rules also determine goal success, overriding the scenes' fixed
+`basket_1` BDDL goals. The canonical public/reference scorer and the legacy
+Task2-26 retry runner use the same basket rules. Results from older fixed-basket
+scorer versions must be reported separately.
 
 For official reporting, use the same adapter and scoring path consistently across all 1-26 tasks.
